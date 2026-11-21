@@ -1,0 +1,39 @@
+name: EYMEN TV RADYO PRO - Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [pro-v4-native]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build React web application
+        run: npm run build
+      - name: Bundle web application into APK
+        run: |
+          mkdir -p app/src/main/assets/www
+          cp -R dist/. app/src/main/assets/www/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build APKs
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EYMEN-TV-RADYO-PRO-v4
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
