@@ -1,4 +1,4 @@
-name: EYMEN TV RADYO PRO - Mobile and Android TV
+name: EYMEN TV RADYO PRO 6 - Mobile and Android TV
 on:
   workflow_dispatch:
   push:
