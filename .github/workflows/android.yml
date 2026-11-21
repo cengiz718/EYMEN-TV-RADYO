@@ -1,4 +1,4 @@
-name: EYMEN TV RADYO PRO - Android APK
+name: EYMEN TV RADYO PRO - Android TV APK
 on:
   workflow_dispatch:
   push:
@@ -32,9 +32,9 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
       - uses: actions/upload-artifact@v4
         with:
-          name: EYMEN-TV-RADYO-PRO-v4
+          name: EYMEN-TV-RADYO-MIBOX-v5
           if-no-files-found: error
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
-# v4 native player build pipeline
+# Mi Box remote navigation, visible settings, native M3U player
