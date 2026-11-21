@@ -66,6 +66,12 @@ class NativeIptvActivity : Activity() {
         if (savedUrl.isNotBlank()) fetch(savedUrl) else askUrl()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        immersive()
+        buildScreen()
+    }
+
     private fun buildPlayer() {
         player = ExoPlayer.Builder(this).build().also { exo ->
             exo.addListener(object : Player.Listener {
