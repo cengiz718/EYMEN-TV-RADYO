@@ -76,9 +76,6 @@ class AppUpdateManager(private val activity: Activity) {
             .setMessage("EYMEN TV RADYO PRO $version sürümü hazır. Devam etmek için güncellemeyi indirip Android kurulum ekranında onaylayın.")
             .setCancelable(false)
             .setPositiveButton("Güncelle") { _, _ -> download(url) }
-            .setNegativeButton("Daha sonra") { _, _ ->
-                Toast.makeText(activity, "Yeni sürüm yüklenene kadar eski sürümle devam edebilirsiniz.", Toast.LENGTH_LONG).show()
-            }
             .show()
     }
 
