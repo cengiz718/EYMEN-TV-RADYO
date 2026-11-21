@@ -1,0 +1,8 @@
+{
+  "name": "EYMEN TV \u0026 Radyo Pro",
+  "description": "Canlı TV kanalları ve arka planda dinlenebilir radyo istasyonları — M3U/HLS yayın oynatıcı, akıllı kategoriler, favoriler ve uyku zamanlayıcısı.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
