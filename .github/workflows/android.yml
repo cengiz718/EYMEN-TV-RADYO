@@ -37,4 +37,4 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
-# Mi Box remote navigation, visible settings, native M3U player
+# Final build includes TV remote focus ring and native player navigation
