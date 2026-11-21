@@ -2,6 +2,7 @@ package com.cengiz718.eymentvradyopro
 
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -16,19 +17,36 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("eymen_tv_prefs", MODE_PRIVATE) }
     private var web: WebView? = null
+    private lateinit var updates: AppUpdateManager
     private val bg = Color.rgb(8, 11, 18)
     private val accent = Color.rgb(255, 177, 72)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updates = AppUpdateManager(this)
         showHome()
+        updates.checkForUpdate()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun immersive() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun isTelevision(): Boolean =
+        packageManager.hasSystemFeature("android.software.leanback")
 
     private fun focusBackground(): StateListDrawable {
         val drawable = StateListDrawable()
@@ -52,7 +70,7 @@ class MainActivity : AppCompatActivity() {
     private fun makeButton(label: String, action: () -> Unit): Button =
         Button(this).apply {
             text = label
-            textSize = 17f
+            textSize = if (isTelevision()) 18f else 16f
             isAllCaps = false
             isFocusable = true
             isFocusableInTouchMode = true
@@ -64,52 +82,53 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun showHome() {
-        web = null
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN
+        disposeWeb()
+        immersive()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(32), dp(22), dp(32), dp(22))
+            setPadding(dp(24), dp(20), dp(24), dp(20))
             setBackgroundColor(bg)
         }
         val title = TextView(this).apply {
             text = "EYMEN TV RADYO PRO"
-            textSize = 30f
+            textSize = if (isTelevision()) 32f else 25f
             setTextColor(accent)
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, dp(8))
         }
         val subtitle = TextView(this).apply {
-            text = "Mi Box ve Android TV için kumanda uyumlu ana menü"
-            textSize = 15f
+            text = "Telefon • Tablet • Android TV • Mi Box"
+            textSize = 14f
             setTextColor(Color.LTGRAY)
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(22))
+            setPadding(0, 0, 0, dp(20))
         }
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
         }
+        val width = if (isTelevision()) dp(460) else -1
+        val lp = LinearLayout.LayoutParams(width, dp(62)).apply { bottomMargin = dp(10) }
         buttons.addView(makeButton("▶   CANLI TV / KANALLAR") {
             startActivity(Intent(this, NativeIptvActivity::class.java))
-        }, LinearLayout.LayoutParams(dp(420), dp(64)).apply { bottomMargin = dp(12) })
+        }, lp)
         buttons.addView(makeButton("⚙   YAYIN LİSTESİ VE AYARLAR") { showSettings() },
-            LinearLayout.LayoutParams(dp(420), dp(64)).apply { bottomMargin = dp(12) })
+            LinearLayout.LayoutParams(width, dp(62)).apply { bottomMargin = dp(10) })
         buttons.addView(makeButton("▣   WEB UYGULAMASINI AÇ") { showWeb() },
-            LinearLayout.LayoutParams(dp(420), dp(64)).apply { bottomMargin = dp(12) })
-        buttons.addView(makeButton("↻   UYGULAMAYI YENİLE") { showHome() },
-            LinearLayout.LayoutParams(dp(420), dp(64)))
+            LinearLayout.LayoutParams(width, dp(62)).apply { bottomMargin = dp(10) })
+        buttons.addView(makeButton("↻   GÜNCELLEME KONTROLÜ") { updates.checkForUpdate() },
+            LinearLayout.LayoutParams(width, dp(62)))
         root.addView(title)
         root.addView(subtitle)
-        root.addView(buttons)
-        val footer = TextView(this).apply {
-            text = "Kumanda: Yön tuşları ile gezin • OK ile seç • BACK ile geri dön"
-            textSize = 13f
+        root.addView(buttons, LinearLayout.LayoutParams(if (isTelevision()) -2 else -1, -2))
+        root.addView(TextView(this).apply {
+            text = "Kumanda: yön tuşları • OK: seç • BACK: çık"
+            textSize = 12f
             setTextColor(Color.GRAY)
             gravity = Gravity.CENTER
-            setPadding(0, dp(22), 0, 0)
-        }
-        root.addView(footer)
+            setPadding(0, dp(18), 0, 0)
+        })
         setContentView(root)
         buttons.getChildAt(0).requestFocus()
     }
@@ -121,23 +140,14 @@ class MainActivity : AppCompatActivity() {
             setText(prefs.getString("playlist_url", ""))
             setSelection(text.length)
         }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(8), dp(22), 0)
-            addView(TextView(this@MainActivity).apply {
-                text = "M3U / M3U8 kanal listesi adresi"
-                setTextColor(Color.WHITE)
-                textSize = 14f
-            })
-            addView(input)
-        }
         AlertDialog.Builder(this)
             .setTitle("Yayın ayarları")
-            .setView(box)
+            .setMessage("M3U / M3U8 kanal listesi adresi")
+            .setView(input)
             .setPositiveButton("Kaydet") { _, _ ->
                 prefs.edit().putString("playlist_url", input.text.toString().trim()).apply()
             }
-            .setNeutralButton("Kanalları Aç") { _, _ ->
+            .setNeutralButton("Kanalları aç") { _, _ ->
                 prefs.edit().putString("playlist_url", input.text.toString().trim()).apply()
                 startActivity(Intent(this, NativeIptvActivity::class.java))
             }
@@ -146,6 +156,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showWeb() {
+        disposeWeb()
+        immersive()
         val view = WebView(this).apply {
             setBackgroundColor(bg)
             isFocusable = true
@@ -154,6 +166,7 @@ class MainActivity : AppCompatActivity() {
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.allowContentAccess = true
+            settings.loadsImagesAutomatically = true
             webViewClient = WebViewClient()
         }
         web = view
@@ -162,6 +175,22 @@ class MainActivity : AppCompatActivity() {
             ?: getString(R.string.default_server_url)
         if (prefs.getBoolean("remote_mode", true)) view.loadUrl(url)
         else view.loadUrl("file:///android_asset/www/index.html")
+    }
+
+    private fun disposeWeb() {
+        web?.let { view ->
+            view.stopLoading()
+            view.onPause()
+            view.loadUrl("about:blank")
+            view.removeAllViews()
+            view.destroy()
+        }
+        web = null
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        immersive()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -180,6 +209,23 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Android")
     override fun onBackPressed() {
-        if (web != null) showHome() else super.onBackPressed()
+        if (web != null) showHome() else finish()
+    }
+
+    @Deprecated("Deprecated in Android")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        updates.onActivityResult(requestCode, resultCode)
+    }
+
+    override fun onStop() {
+        web?.onPause()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        disposeWeb()
+        updates.close()
+        super.onDestroy()
     }
 }
