@@ -1,13 +1,18 @@
-name: EYMEN TV RADYO PRO - Android TV APK
+name: EYMEN TV RADYO PRO - Mobile and Android TV
 on:
   workflow_dispatch:
   push:
     branches: [pro-v4-native]
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,9 +20,9 @@ jobs:
           node-version: '22'
       - name: Install web dependencies
         run: npm install --no-audit --no-fund
-      - name: Build React web application
+      - name: Build web application
         run: npm run build
-      - name: Bundle web application into APK
+      - name: Bundle web application
         run: |
           mkdir -p app/src/main/assets/www
           cp -R dist/. app/src/main/assets/www/
@@ -28,13 +33,29 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build APKs
+      - name: Prepare stable release signing key
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/eymen-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/eymen-release.jks" >> "$GITHUB_ENV"
+      - name: Build Android APKs
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: EYMEN-TV-RADYO-MIBOX-v5
+          name: EYMEN-TV-RADYO-6.0.0-APKs
           if-no-files-found: error
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
-# Final build includes TV remote focus ring and native player navigation
+      - name: Publish signed APK as GitHub Release
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v6.0.0
+          name: EYMEN TV RADYO PRO 6.0.0
+          target_commitish: pro-v4-native
+          generate_release_notes: true
+          files: app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
