@@ -37,6 +37,9 @@ class AppUpdateManager(private val activity: Activity) {
                 val code = connection.responseCode
                 if (code !in 200..299) {
                     connection.disconnect()
+                    if (code == 404 || code == 401) activity.runOnUiThread {
+                        Toast.makeText(activity, "GitHub güncelleme servisine erişilemiyor. Depo özel veya sürüm erişimi kapalı olabilir.", Toast.LENGTH_LONG).show()
+                    }
                     return@execute
                 }
                 val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
