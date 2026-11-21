@@ -37,3 +37,4 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
+# v4 native player build pipeline
