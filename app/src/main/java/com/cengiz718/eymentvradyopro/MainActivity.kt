@@ -3,6 +3,8 @@ package com.cengiz718.eymentvradyopro
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
@@ -12,7 +14,6 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
@@ -27,6 +28,27 @@ class MainActivity : AppCompatActivity() {
         showHome()
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun focusBackground(): StateListDrawable {
+        val drawable = StateListDrawable()
+        drawable.addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+            setColor(Color.rgb(67, 76, 92))
+            setStroke(dp(4), accent)
+            cornerRadius = dp(12).toFloat()
+        })
+        drawable.addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply {
+            setColor(Color.rgb(82, 91, 108))
+            cornerRadius = dp(12).toFloat()
+        })
+        drawable.addState(intArrayOf(), GradientDrawable().apply {
+            setColor(Color.rgb(31, 39, 52))
+            setStroke(dp(1), Color.rgb(76, 86, 104))
+            cornerRadius = dp(12).toFloat()
+        })
+        return drawable
+    }
+
     private fun makeButton(label: String, action: () -> Unit): Button =
         Button(this).apply {
             text = label
@@ -37,11 +59,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = dp(58)
             setOnClickListener { action() }
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(35, 43, 57))
+            background = focusBackground()
             setPadding(dp(18), dp(8), dp(18), dp(8))
         }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun showHome() {
         web = null
