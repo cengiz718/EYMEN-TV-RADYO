@@ -1,6 +1,6 @@
 {
-  "versionCode": 9,
-  "versionName": "7.2.0",
+  "versionCode": 10,
+  "versionName": "7.3.0",
   "apkUrl": "https://github.com/cengiz718/EYMEN-TV-RADYO/releases/latest/download/app-release.apk",
-  "releaseNotes": "Güncelleme kontrolü sürüm numarası manifestinden yapılır; yeni sürüm bulunduğunda APK indirilir ve Android kurulum ekranı açılır."
+  "releaseNotes": "7.3.0: Android TV/Mi Box için yerel web arayüzü, daha kararlı yatay kullanım, kumanda odağı ve uygulamadan çıkış düzeltildi."
 }
