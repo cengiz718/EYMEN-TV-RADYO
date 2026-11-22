@@ -1,4 +1,7 @@
+import Hls from "hls.js";
+
 export type MediaCategory = "tv" | "radio" | "movie" | "series";
+export type ActiveMediaCategory = Extract<MediaCategory, "tv" | "radio">;
 
 export interface StreamSource {
   id: string;
@@ -18,430 +21,455 @@ export interface MediaItem {
   sources: StreamSource[];
 }
 
-export interface CatalogConfig {
-  tvJsonUrl?: string;
-  tvM3uUrl?: string;
-  radioJsonUrl?: string;
-  movieJsonUrl?: string;
-  seriesJsonUrl?: string;
-  failoverTimeoutMs?: number;
+export interface CatalogUrls {
+  tv?: string[];
+  radio?: string[];
 }
 
-export type PlayerStatusListener = (info: {
-  item: MediaItem;
-  source: StreamSource;
-  sourceIndex: number;
+export interface StreamStatusEvent {
+  state: "idle" | "loading" | "playing" | "failover" | "error" | "stopped";
   message: string;
-  isError?: boolean;
-}) => void;
-
-interface HlsErrorData {
-  fatal?: boolean;
-  type?: string;
-  details?: string;
+  source?: StreamSource;
 }
 
-interface HlsInstance {
-  loadSource: (url: string) => void;
-  attachMedia: (media: HTMLMediaElement) => void;
-  startLoad: () => void;
-  recoverMediaError: () => void;
-  on: (event: string, cb: (_event: string, data: HlsErrorData) => void) => void;
-  destroy: () => void;
+export interface EymenStreamControllerOptions {
+  failoverTimeoutMs?: number;
+  onStatus?: (event: StreamStatusEvent) => void;
 }
 
-interface HlsConstructor {
-  isSupported: () => boolean;
-  new (config?: Record<string, unknown>): HlsInstance;
-  Events: {
-    ERROR: string;
-  };
-  ErrorTypes?: {
-    NETWORK_ERROR?: string;
-    MEDIA_ERROR?: string;
-  };
+const DEFAULT_TIMEOUT_MS = 5000;
+
+function isValidUrl(url: unknown): url is string {
+  return typeof url === "string" && /^https?:\/\//i.test(url.trim());
 }
 
-function getWindowHls(): HlsConstructor | undefined {
-  return (window as unknown as { Hls?: HlsConstructor }).Hls;
-}
+function normalizeSources(item: MediaItem): StreamSource[] {
+  const rawSources = Array.isArray(item.sources) ? item.sources : [];
+  const valid = rawSources
+    .map((s, idx) => {
+      const candidateUrl =
+        (s as unknown as { url?: string; streamUrl?: string; link?: string })?.url ??
+        (s as unknown as { streamUrl?: string })?.streamUrl ??
+        (s as unknown as { link?: string })?.link ??
+        "";
 
-function isValidMediaItem(item: unknown): item is MediaItem {
-  if (!item || typeof item !== "object") return false;
-  const candidate = item as Partial<MediaItem>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.title === "string" &&
-    Array.isArray(candidate.sources) &&
-    candidate.sources.some(
-      (s) => s && typeof s.url === "string" && s.url.trim().length > 0
-    )
-  );
-}
+      if (!isValidUrl(candidateUrl)) return null;
 
-export function parseM3uToMediaItems(
-  m3uText: string,
-  category: MediaCategory = "tv"
-): MediaItem[] {
-  const lines = m3uText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const groupedMap = new Map<string, MediaItem>();
-  let pendingMeta: { title: string; group: string; logo?: string } | null = null;
-
-  for (const line of lines) {
-    if (line.startsWith("#EXTINF:")) {
-      const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
-      const groupMatch = line.match(/group-title="([^"]*)"/i);
-      const commaIdx = line.lastIndexOf(",");
-      const title =
-        commaIdx >= 0 ? line.slice(commaIdx + 1).trim() : "İsimsiz Yayın";
-
-      pendingMeta = {
-        title: title || "İsimsiz Yayın",
-        group: groupMatch?.[1]?.trim() || "Genel",
-        logo: logoMatch?.[1]?.trim() || undefined,
+      return {
+        id: String(s?.id || `${item.id}-s${idx + 1}`),
+        label: String(s?.label || (idx === 0 ? "Ana Yayın" : `Yedek Yayın ${idx}`)),
+        url: candidateUrl.trim().replace(/(?<!:)\/{2,}/g, "/"),
+        priority: typeof s?.priority === "number" ? s.priority : idx + 1,
       };
-    } else if (line.startsWith("#")) {
-      // #EXTVLCOPT gibi ek etiketlerde pendingMeta korunur
-      continue;
-    } else if (pendingMeta && /^https?:\/\//i.test(line)) {
-      const key = `${category}:${pendingMeta.title.toLowerCase()}`;
-      const existing = groupedMap.get(key);
+    })
+    .filter((entry): entry is StreamSource => entry !== null);
 
-      if (existing) {
-        const nextIdx = existing.sources.length + 1;
-        existing.sources.push({
-          id: `${existing.id}-src-${nextIdx}`,
-          label: `Yedek Yayın ${nextIdx - 1}`,
-          url: line,
-          priority: nextIdx,
-        });
-      } else {
-        const idBase = `${category}-${groupedMap.size + 1}`;
-        groupedMap.set(key, {
-          id: idBase,
-          title: pendingMeta.title,
-          category,
-          group: pendingMeta.group,
-          logo: pendingMeta.logo,
-          sources: [
-            {
-              id: `${idBase}-src-1`,
-              label: "Ana Yayın",
-              url: line,
-              priority: 1,
-            },
-          ],
-        });
-      }
-      pendingMeta = null;
-    }
-  }
+  return valid.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+}
 
-  return Array.from(groupedMap.values());
+function normalizeMediaItem(
+  raw: unknown,
+  category: ActiveMediaCategory,
+  fallbackIndex: number
+): MediaItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const title =
+    typeof obj.title === "string" && obj.title.trim()
+      ? obj.title.trim()
+      : `Yayın ${fallbackIndex + 1}`;
+
+  const item: MediaItem = {
+    id:
+      typeof obj.id === "string" && obj.id.trim()
+        ? obj.id.trim()
+        : `${category}-${fallbackIndex + 1}`,
+    title,
+    category,
+    group:
+      typeof obj.group === "string" && obj.group.trim()
+        ? obj.group.trim()
+        : category === "tv"
+          ? "Canlı TV"
+          : "Radyo",
+    logo:
+      typeof obj.logo === "string" && isValidUrl(obj.logo)
+        ? obj.logo.trim()
+        : undefined,
+    sources: [],
+  };
+
+  item.sources = normalizeSources({
+    ...item,
+    sources: Array.isArray(obj.sources) ? (obj.sources as StreamSource[]) : [],
+  });
+
+  if (item.sources.length === 0) return null;
+  return item;
+}
+
+function isHlsUrl(url: string): boolean {
+  return /\.m3u8(\?.*)?$/i.test(url.trim());
 }
 
 export class EymenStreamController {
-  private mediaEl: HTMLVideoElement | HTMLAudioElement;
-  private onStatus?: PlayerStatusListener;
-  private timeoutMs: number;
-  private failoverTimer: number | null = null;
-  private failedTimestamps = new Map<string, number>();
-
-  private activeItem: MediaItem | null = null;
-  private activeSources: StreamSource[] = [];
-  private activeSourceIndex = 0;
-  private hlsInstance: HlsInstance | null = null;
-  private sessionToken = 0;
-  private hasStartedPlaying = false;
-  private hlsMediaRecoveryAttempted = false;
+  private mediaEl: HTMLMediaElement;
+  private failoverTimeoutMs: number;
+  private onStatus?: (event: StreamStatusEvent) => void;
+  private timerId: number | null = null;
+  private hlsInstance: Hls | null = null;
+  private currentItem: MediaItem | null = null;
+  private sources: StreamSource[] = [];
+  private currentIndex = 0;
+  private sessionId = 0;
+  private isStopped = false;
 
   constructor(
-    mediaElement: HTMLVideoElement | HTMLAudioElement,
-    options?: { failoverTimeoutMs?: number; onStatus?: PlayerStatusListener }
+    mediaEl: HTMLMediaElement,
+    options: EymenStreamControllerOptions = {}
   ) {
-    this.mediaEl = mediaElement;
-    this.timeoutMs = options?.failoverTimeoutMs ?? 5000;
-    this.onStatus = options?.onStatus;
-    this.bindMediaEvents();
+    this.mediaEl = mediaEl;
+    this.failoverTimeoutMs = options.failoverTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.onStatus = options.onStatus;
+
+    this.mediaEl.addEventListener("playing", this.handlePlaying);
+    this.mediaEl.addEventListener("error", this.handleMediaError);
   }
 
   private clearTimer(): void {
-    if (this.failoverTimer !== null) {
-      window.clearTimeout(this.failoverTimer);
-      this.failoverTimer = null;
+    if (this.timerId !== null) {
+      window.clearTimeout(this.timerId);
+      this.timerId = null;
     }
   }
 
   private destroyHls(): void {
     if (this.hlsInstance) {
       try {
+        this.hlsInstance.stopLoad();
+        this.hlsInstance.detachMedia();
         this.hlsInstance.destroy();
-      } catch {
-        // Temizleme hatası yoksayılır
+      } catch (_) {
+        // ignore cleanup error
       }
       this.hlsInstance = null;
     }
-    this.hlsMediaRecoveryAttempted = false;
   }
 
-  private isUrlRecentlyFailed(url: string): boolean {
-    const ts = this.failedTimestamps.get(url);
-    if (!ts) return false;
-    if (Date.now() - ts > 60_000) {
-      this.failedTimestamps.delete(url);
-      return false;
-    }
-    return true;
+  private emit(event: StreamStatusEvent): void {
+    this.onStatus?.(event);
   }
 
-  private emitStatus(message: string, isError = false): void {
-    if (!this.activeItem || !this.onStatus) return;
-    const source = this.activeSources[this.activeSourceIndex];
-    if (!source) return;
-
-    this.onStatus({
-      item: this.activeItem,
-      source,
-      sourceIndex: this.activeSourceIndex,
-      message,
-      isError,
-    });
-  }
-
-  private bindMediaEvents(): void {
-    this.mediaEl.addEventListener("playing", () => {
-      this.clearTimer();
-      this.hasStartedPlaying = true;
-      const src = this.activeSources[this.activeSourceIndex];
-      this.emitStatus(`Yayında • ${src?.label ?? "Kaynak"}`, false);
-    });
-
-    this.mediaEl.addEventListener("error", () => {
-      const token = this.sessionToken;
-      if (!this.activeItem || token !== this.sessionToken) return;
-      this.switchToNextSource("Yayın hatası oluştu", token);
-    });
-
-    this.mediaEl.addEventListener("stalled", () => {
-      const token = this.sessionToken;
-      if (!this.activeItem || token !== this.sessionToken) return;
-      this.scheduleFailover("Bağlantı yavaşladı", token);
-    });
-
-    this.mediaEl.addEventListener("ended", () => {
-      const token = this.sessionToken;
-      if (!this.activeItem || token !== this.sessionToken) return;
-      if (this.activeSources.length > 1) {
-        this.switchToNextSource("Yayın kesildi, yedek deneniyor", token);
-      }
-    });
-  }
-
-  private scheduleFailover(reason: string, token = this.sessionToken): void {
+  private handlePlaying = (): void => {
+    if (this.isStopped || !this.currentItem) return;
     this.clearTimer();
-    this.failoverTimer = window.setTimeout(() => {
-      if (token !== this.sessionToken || !this.activeItem) return;
-      if (!this.hasStartedPlaying || this.mediaEl.readyState < 2) {
-        this.switchToNextSource(reason, token);
+    const activeSource = this.sources[this.currentIndex];
+    this.emit({
+      state: "playing",
+      message: `${this.currentItem.title} oynatılıyor (${
+        activeSource?.label ?? "Ana Kaynak"
+      })`,
+      source: activeSource,
+    });
+  };
+
+  private handleMediaError = (): void => {
+    if (
+      this.isStopped ||
+      !this.currentItem ||
+      !this.mediaEl.getAttribute("src")
+    ) {
+      return;
+    }
+    this.tryNextSource("Akış hatası oluştu", this.sessionId);
+  };
+
+  private armFailoverTimer(activeSession: number): void {
+    this.clearTimer();
+    this.timerId = window.setTimeout(() => {
+      if (!this.isStopped && activeSession === this.sessionId) {
+        this.tryNextSource("Yayın zaman aşımına uğradı", activeSession);
       }
-    }, this.timeoutMs);
+    }, this.failoverTimeoutMs);
+  }
+
+  private async attachAndPlay(
+    source: StreamSource,
+    activeSession: number
+  ): Promise<void> {
+    if (this.isStopped || activeSession !== this.sessionId) return;
+
+    this.destroyHls();
+    this.clearTimer();
+
+    try {
+      this.mediaEl.pause();
+      this.mediaEl.removeAttribute("src");
+      this.mediaEl.load();
+    } catch (_) {
+      // ignore media reset warning
+    }
+
+    this.emit({
+      state: "loading",
+      message: `${this.currentItem?.title ?? "Yayın"} • ${source.label} deneniyor...`,
+      source,
+    });
+
+    this.armFailoverTimer(activeSession);
+
+    const url = source.url.trim();
+
+    try {
+      if (isHlsUrl(url) && Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+        });
+        this.hlsInstance = hls;
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (this.isStopped || activeSession !== this.sessionId) return;
+          if (data?.fatal) {
+            this.tryNextSource("HLS akışı yanıt vermedi", activeSession);
+          }
+        });
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (this.isStopped || activeSession !== this.sessionId) return;
+          void this.mediaEl.play().catch(() => {
+            // Autoplay kısıtı durumunda kullanıcı etkileşimi beklenir
+          });
+        });
+
+        hls.loadSource(url);
+        hls.attachMedia(this.mediaEl);
+      } else {
+        this.mediaEl.src = url;
+        this.mediaEl.load();
+        const playPromise = this.mediaEl.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => {
+            // Autoplay engeli veya akış hatası
+          });
+        }
+      }
+    } catch (_) {
+      this.tryNextSource("Kaynak açılamadı", activeSession);
+    }
+  }
+
+  private tryNextSource(reason: string, activeSession: number): void {
+    if (
+      this.isStopped ||
+      activeSession !== this.sessionId ||
+      this.sources.length === 0
+    ) {
+      return;
+    }
+
+    this.clearTimer();
+
+    if (this.currentIndex + 1 < this.sources.length) {
+      this.currentIndex += 1;
+      const nextSource = this.sources[this.currentIndex];
+      this.emit({
+        state: "failover",
+        message: `${reason} — ${nextSource.label} geçiliyor...`,
+        source: nextSource,
+      });
+      void this.attachAndPlay(nextSource, activeSession);
+    } else {
+      this.emit({
+        state: "error",
+        message: `${
+          this.currentItem?.title ?? "Yayın"
+        } için tüm kaynaklar başarısız oldu`,
+      });
+    }
   }
 
   public playItem(item: MediaItem, startIndex = 0): void {
-    const validSources = (item.sources || []).filter(
-      (s) => typeof s.url === "string" && s.url.trim().length > 0
-    );
-    if (validSources.length === 0) return;
-
-    this.sessionToken += 1;
-    const currentToken = this.sessionToken;
-
-    this.activeItem = item;
-    this.activeSources = [...validSources].sort(
-      (a, b) => (a.priority ?? 99) - (b.priority ?? 99)
+    this.sessionId += 1;
+    const activeSession = this.sessionId;
+    this.isStopped = false;
+    this.currentItem = item;
+    this.sources = normalizeSources(item);
+    this.currentIndex = Math.max(
+      0,
+      Math.min(startIndex, Math.max(0, this.sources.length - 1))
     );
 
-    const candidateIdx = this.activeSources.findIndex(
-      (s, idx) => idx >= startIndex && !this.isUrlRecentlyFailed(s.url)
-    );
-    this.activeSourceIndex =
-      candidateIdx >= 0
-        ? candidateIdx
-        : Math.min(startIndex, this.activeSources.length - 1);
-
-    const chosen = this.activeSources[this.activeSourceIndex];
-    this.emitStatus(`${chosen.label} bağlanıyor...`, false);
-    this.loadSource(chosen.url, currentToken);
-  }
-
-  public switchToNextSource(
-    reason = "Kaynak değiştiriliyor",
-    expectedToken = this.sessionToken
-  ): boolean {
-    if (
-      expectedToken !== this.sessionToken ||
-      !this.activeItem ||
-      this.activeSources.length === 0
-    ) {
-      return false;
+    if (this.sources.length === 0) {
+      this.clearTimer();
+      this.destroyHls();
+      this.emit({
+        state: "error",
+        message: `${item.title} için aktif yayın bağlantısı bulunamadı`,
+      });
+      return;
     }
 
-    this.sessionToken += 1;
-    const currentToken = this.sessionToken;
-
-    const prevSrc = this.activeSources[this.activeSourceIndex];
-    if (prevSrc) {
-      this.failedTimestamps.set(prevSrc.url, Date.now());
-    }
-
-    const nextIdx = this.activeSourceIndex + 1;
-    if (nextIdx < this.activeSources.length) {
-      this.activeSourceIndex = nextIdx;
-      const nextSrc = this.activeSources[this.activeSourceIndex];
-      this.emitStatus(`${reason} → ${nextSrc.label} deneniyor...`, true);
-      this.loadSource(nextSrc.url, currentToken);
-      return true;
-    }
-
-    this.clearTimer();
-    this.destroyHls();
-    this.emitStatus("Tüm yedek kaynaklar denendi, yayın açılamadı.", true);
-    return false;
+    void this.attachAndPlay(this.sources[this.currentIndex], activeSession);
   }
 
   public cycleSourceManual(): void {
-    if (!this.activeItem || this.activeSources.length <= 1) return;
-
-    this.sessionToken += 1;
-    const currentToken = this.sessionToken;
-
-    this.activeSourceIndex =
-      (this.activeSourceIndex + 1) % this.activeSources.length;
-    const chosen = this.activeSources[this.activeSourceIndex];
-    this.failedTimestamps.delete(chosen.url);
-    this.emitStatus(`Manuel geçiş: ${chosen.label}`, false);
-    this.loadSource(chosen.url, currentToken);
-  }
-
-  private loadSource(url: string, token: number): void {
-    if (token !== this.sessionToken) return;
-
-    this.clearTimer();
-    this.destroyHls();
-    this.hasStartedPlaying = false;
-
-    this.mediaEl.pause();
-    this.mediaEl.removeAttribute("src");
-    this.mediaEl.load();
-
-    const isHls = /\.m3u8(\?.*)?$/i.test(url);
-    const HlsLib = getWindowHls();
-
-    if (isHls && HlsLib && HlsLib.isSupported()) {
-      const hls = new HlsLib({ enableWorker: true });
-      this.hlsInstance = hls;
-      hls.loadSource(url);
-      hls.attachMedia(this.mediaEl);
-
-      hls.on(HlsLib.Events.ERROR, (_ev, data) => {
-        if (token !== this.sessionToken || !this.hlsInstance) return;
-        if (!data?.fatal) return;
-
-        const mediaErrType = HlsLib.ErrorTypes?.MEDIA_ERROR;
-        const netErrType = HlsLib.ErrorTypes?.NETWORK_ERROR;
-
-        if (data.type === mediaErrType && !this.hlsMediaRecoveryAttempted) {
-          this.hlsMediaRecoveryAttempted = true;
-          this.emitStatus("Medya akışı kurtarılıyor...", true);
-          this.hlsInstance.recoverMediaError();
-          return;
-        }
-
-        if (data.type === netErrType) {
-          this.hlsInstance.startLoad();
-        }
-
-        this.switchToNextSource("HLS akış hatası", token);
-      });
-
-      this.mediaEl.play().catch(() => {});
-    } else {
-      this.mediaEl.src = url;
-      this.mediaEl.load();
-      this.mediaEl.play().catch(() => {});
-    }
-
-    this.scheduleFailover("Bağlantı zaman aşımı", token);
+    if (!this.currentItem || this.sources.length === 0) return;
+    this.sessionId += 1;
+    const activeSession = this.sessionId;
+    this.isStopped = false;
+    this.currentIndex = (this.currentIndex + 1) % this.sources.length;
+    void this.attachAndPlay(this.sources[this.currentIndex], activeSession);
   }
 
   public stop(): void {
-    this.sessionToken += 1;
+    this.sessionId += 1;
+    this.isStopped = true;
     this.clearTimer();
     this.destroyHls();
-    this.hasStartedPlaying = false;
-    this.activeItem = null;
-    this.activeSources = [];
-    this.mediaEl.pause();
-    this.mediaEl.removeAttribute("src");
-    this.mediaEl.load();
+    try {
+      this.mediaEl.pause();
+      this.mediaEl.removeAttribute("src");
+      this.mediaEl.load();
+    } catch (_) {
+      // ignore stop cleanup error
+    }
+    this.emit({
+      state: "stopped",
+      message: "Yayın durduruldu",
+    });
+  }
+
+  public destroy(): void {
+    this.stop();
+    this.mediaEl.removeEventListener("playing", this.handlePlaying);
+    this.mediaEl.removeEventListener("error", this.handleMediaError);
   }
 }
 
-export async function loadAllCatalogs(
-  config: CatalogConfig,
-  fallbackItems: Record<MediaCategory, MediaItem[]>
-): Promise<Record<MediaCategory, MediaItem[]>> {
-  const result: Record<MediaCategory, MediaItem[]> = {
-    tv: [...fallbackItems.tv],
-    radio: [...fallbackItems.radio],
-    movie: [...fallbackItems.movie],
-    series: [...fallbackItems.series],
-  };
+function parseM3uToItems(
+  m3uText: string,
+  category: ActiveMediaCategory
+): MediaItem[] {
+  const lines = m3uText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 
-  async function fetchJson(url?: string): Promise<MediaItem[] | null> {
-    if (!url) return null;
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) return null;
-      const data = await res.json();
-      if (!Array.isArray(data)) return null;
-      const valid = data.filter(isValidMediaItem);
-      return valid.length > 0 ? valid : null;
-    } catch {
-      return null;
+  const grouped = new Map<string, MediaItem>();
+  let currentTitle = "";
+  let currentGroup = category === "tv" ? "Canlı TV" : "Radyo";
+  let currentLogo = "";
+
+  for (const line of lines) {
+    if (line.startsWith("#EXTINF:")) {
+      const groupMatch = line.match(/group-title="([^"]*)"/i);
+      const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
+      const titleMatch = line.match(/,(.+)$/);
+
+      currentGroup =
+        groupMatch?.[1]?.trim() || (category === "tv" ? "Canlı TV" : "Radyo");
+      currentLogo = logoMatch?.[1]?.trim() || "";
+      currentTitle = titleMatch?.[1]?.trim() || "İsimsiz Yayın";
+    } else if (isValidUrl(line)) {
+      const cleanUrl = line.trim().replace(/(?<!:)\/{2,}/g, "/");
+      const key = `${category}:${currentTitle.toLowerCase()}`;
+      const existing = grouped.get(key);
+
+      const newSource: StreamSource = {
+        id: `${key}-${existing ? existing.sources.length + 1 : 1}`,
+        label: existing
+          ? `Yedek Yayın ${existing.sources.length}`
+          : "Ana Yayın",
+        url: cleanUrl,
+        priority: existing ? existing.sources.length + 1 : 1,
+      };
+
+      if (existing) {
+        existing.sources.push(newSource);
+      } else {
+        grouped.set(key, {
+          id: `${category}-${grouped.size + 1}`,
+          title: currentTitle || `Yayın ${grouped.size + 1}`,
+          category,
+          group: currentGroup,
+          logo: isValidUrl(currentLogo) ? currentLogo : undefined,
+          sources: [newSource],
+        });
+      }
+
+      currentTitle = "";
+      currentLogo = "";
     }
   }
 
-  const [tvJson, radioJson, movieJson, seriesJson] = await Promise.all([
-    fetchJson(config.tvJsonUrl),
-    fetchJson(config.radioJsonUrl),
-    fetchJson(config.movieJsonUrl),
-    fetchJson(config.seriesJsonUrl),
-  ]);
+  return Array.from(grouped.values());
+}
 
-  if (tvJson?.length) result.tv = tvJson;
-  if (radioJson?.length) result.radio = radioJson;
-  if (movieJson?.length) result.movie = movieJson;
-  if (seriesJson?.length) result.series = seriesJson;
+async function fetchCategoryList(
+  urls: string[] | undefined,
+  category: ActiveMediaCategory,
+  fallback: MediaItem[]
+): Promise<MediaItem[]> {
+  if (!urls || urls.length === 0) {
+    return fallback;
+  }
 
-  if (config.tvM3uUrl) {
+  for (const url of urls) {
+    if (!isValidUrl(url)) continue;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
     try {
-      const res = await fetch(config.tvM3uUrl, { cache: "no-store" });
-      if (res.ok) {
-        const m3uText = await res.text();
-        const parsed = parseM3uToMediaItems(m3uText, "tv");
-        if (parsed.length > 0) {
-          result.tv = [...result.tv, ...parsed];
+      const res = await fetch(url, { signal: controller.signal });
+      window.clearTimeout(timeout);
+      if (!res.ok) continue;
+
+      const text = await res.text();
+      const trimmed = text.trim();
+
+      if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+        const parsed = JSON.parse(trimmed);
+        const list = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray((parsed as { items?: unknown[] })?.items)
+            ? (parsed as { items: unknown[] }).items
+            : [];
+
+        const normalized = list
+          .map((item, idx) => normalizeMediaItem(item, category, idx))
+          .filter((item): item is MediaItem => item !== null);
+
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      } else if (trimmed.includes("#EXTINF:") || /^https?:\/\//m.test(trimmed)) {
+        const items = parseM3uToItems(trimmed, category);
+        if (items.length > 0) {
+          return items;
         }
       }
-    } catch {
-      // M3U çekilemezse mevcut TV listesi korunur
+    } catch (_) {
+      window.clearTimeout(timeout);
     }
   }
 
-  return result;
+  return fallback;
+}
+
+export async function loadAllCatalogs(
+  urls: CatalogUrls = {},
+  fallback: Record<MediaCategory, MediaItem[]>
+): Promise<Record<MediaCategory, MediaItem[]>> {
+  const [tv, radio] = await Promise.all([
+    fetchCategoryList(urls.tv, "tv", fallback.tv || []),
+    fetchCategoryList(urls.radio, "radio", fallback.radio || []),
+  ]);
+
+  return {
+    tv,
+    radio,
+    movie: [],
+    series: [],
+  };
 }
