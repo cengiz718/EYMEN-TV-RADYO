@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   EymenStreamController,
   loadAllCatalogs,
@@ -220,21 +220,25 @@ export function App() {
   const tvItems = catalogs.tv || [];
   const radioItems = catalogs.radio || [];
 
-  const getPoolForColumn = (
-    column: FocusColumn
-  ): Array<HTMLButtonElement | null> => {
-    return column === "tv" ? tvCardRefs.current : radioCardRefs.current;
-  };
+  const getPoolForColumn = useCallback(
+    (column: FocusColumn): Array<HTMLButtonElement | null> => {
+      return column === "tv" ? tvCardRefs.current : radioCardRefs.current;
+    },
+    []
+  );
 
-  const focusElement = (target: FocusTarget) => {
-    const pool = getPoolForColumn(target.column);
-    const clampedIdx = Math.max(0, Math.min(target.index, pool.length - 1));
-    const el = pool[clampedIdx];
-    if (el) {
-      el.focus({ preventScroll: false });
-      el.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }
-  };
+  const focusElement = useCallback(
+    (target: FocusTarget) => {
+      const pool = getPoolForColumn(target.column);
+      const clampedIdx = Math.max(0, Math.min(target.index, pool.length - 1));
+      const el = pool[clampedIdx];
+      if (el) {
+        el.focus({ preventScroll: false });
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    },
+    [getPoolForColumn]
+  );
 
   useEffect(() => {
     const mediaEl = videoRef.current;
@@ -260,7 +264,7 @@ export function App() {
       });
 
     return () => {
-      controller.stop();
+      controller.destroy();
       controllerRef.current = null;
     };
   }, []);
@@ -276,9 +280,19 @@ export function App() {
       focusElement(initial);
     }, 50);
     return () => window.clearTimeout(timer);
-  }, [activeCategory, catalogs, isPlayerOpen]);
+  }, [activeCategory, isPlayerOpen, focusElement]);
 
-  const handleClosePlayer = () => {
+  useEffect(() => {
+    if (isPlayerOpen) return;
+    setFocusTarget((prev) => {
+      const len = prev.column === "tv" ? tvItems.length : radioItems.length;
+      const safeIndex = len > 0 ? Math.max(0, Math.min(prev.index, len - 1)) : 0;
+      if (safeIndex === prev.index) return prev;
+      return { column: prev.column, index: safeIndex };
+    });
+  }, [tvItems.length, radioItems.length, isPlayerOpen]);
+
+  const handleClosePlayer = useCallback(() => {
     controllerRef.current?.stop();
     setIsPlayerOpen(false);
     setStatusMessage("Oynatıcı kapatıldı");
@@ -287,19 +301,26 @@ export function App() {
       setFocusTarget(lastPlayedTarget);
       focusElement(lastPlayedTarget);
     }, 50);
-  };
+  }, [lastPlayedTarget, focusElement]);
 
   useEffect(() => {
     if (!isPlayerOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      const isInput = tag === "input" || tag === "textarea" || tag === "select";
+
+      if (
+        e.key === "Escape" ||
+        e.key === "BrowserBack" ||
+        (!isInput && e.key === "Backspace")
+      ) {
         e.preventDefault();
         handleClosePlayer();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  });
+  }, [isPlayerOpen, handleClosePlayer]);
 
   const handleSelectItem = (
     item: MediaItem,
@@ -502,7 +523,6 @@ export function App() {
           minWidth: 0,
         }}
       >
-        {/* Sol Taraf: TV Listesi */}
         <section
           style={{
             backgroundColor: theme.surface,
@@ -574,7 +594,6 @@ export function App() {
           </div>
         </section>
 
-        {/* Sağ Taraf: Radyo Listesi */}
         <section
           style={{
             backgroundColor: theme.surface,
