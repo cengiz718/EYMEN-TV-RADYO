@@ -1,35 +1,55 @@
-name: Build APK
+name: Build Web & Android APK
 
 on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Web bağımlılıklarını kur ve derle
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npm run build
+
+      - name: JDK 17 kur
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: "temurin"
           java-version: "17"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Gradle izinlerini ver ve APK derle
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew || true
-
-      - name: Build Debug APK
-        run: gradle assembleDebug
-
-      - name: Upload APK Artifact
+      - name: Debug APK dosyasını Artifact olarak yükle
         uses: actions/upload-artifact@v4
         with:
-          name: EYMEN-TV-RADYO-PRO-APK
+          name: eymen-tv-radyo-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: APK dosyasını Otomatik Güncelleme (Latest Release) olarak yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Eymen TV & Radyo Güncel Sürüm
+          files: app/build/outputs/apk/debug/app-debug.apk
