@@ -166,23 +166,34 @@ class NativeIptvActivity : Activity() {
         }
 
         if (landscape) {
-            val videoColumn = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(playerView, LinearLayout.LayoutParams(-1, 0, 1f))
+            // Yatay TV/Mi Box ve yatay telefon: sağdaki menü yerine alt menü.
+            root.orientation = LinearLayout.VERTICAL
+
+            root.addView(playerView, LinearLayout.LayoutParams(-1, 0, 1f))
+
+            val actionsScroll = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                isFillViewport = true
             }
-            root.addView(videoColumn, LinearLayout.LayoutParams(0, -1, 1.55f))
-            val side = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), 0, 0, 0)
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
             }
-            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            actions.addView(makeButton("⚙ Ayar") { showSettings() }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            actions.addView(makeButton("⌕ Ara") { askSearch() }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            actions.addView(makeButton("↻ Liste") { reloadList() }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            side.addView(actions)
-            side.addView(count, LinearLayout.LayoutParams(-1, dp(36)))
-            side.addView(listScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-            root.addView(side, LinearLayout.LayoutParams(0, -1, 1f))
+            actions.addView(makeButton("⚙ Ayarlar") { showSettings() },
+                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) })
+            actions.addView(makeButton("⌕ Kanal ara") { askSearch() },
+                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) })
+            actions.addView(makeButton("↻ Liste") { reloadList() },
+                LinearLayout.LayoutParams(dp(120), dp(48)).apply { marginEnd = dp(6) })
+            actions.addView(makeButton("‹ Önceki") { playRelative(-1) },
+                LinearLayout.LayoutParams(dp(115), dp(48)).apply { marginEnd = dp(6) })
+            actions.addView(makeButton("Sonraki ›") { playRelative(1) },
+                LinearLayout.LayoutParams(dp(115), dp(48)))
+            actionsScroll.addView(actions)
+            root.addView(actionsScroll, LinearLayout.LayoutParams(-1, dp(54)))
+
+            root.addView(count, LinearLayout.LayoutParams(-1, dp(32)))
+            root.addView(listScroll, LinearLayout.LayoutParams(-1, 0, 0.65f))
         } else {
             root.addView(status, LinearLayout.LayoutParams(-1, dp(34)))
             val actionsScroll = HorizontalScrollView(this).apply {
