@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Eymen TV &amp; Radyo</title>
+    <title>Eymen TV & Radyo</title>
     <meta name="description" content="Canlı TV kanalları, çoklu ekran modu, online radyo, EPG yayın akışı ve M3U/Xtream destekli televizyon ve mobil yayın oynatıcısı." />
-    <meta property="og:title" content="Eymen TV &amp; Radyo" />
+    <meta property="og:title" content="Eymen TV & Radyo" />
     <meta property="og:description" content="Canlı TV kanalları, çoklu ekran modu, online radyo, EPG yayın akışı ve M3U/Xtream destekli televizyon ve mobil yayın oynatıcısı." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
@@ -57,10 +57,127 @@
       [role="dialog"] * {
         pointer-events: auto !important;
       }
+
+      /* Sağ menüyü genişlet ve sekme yazılarının "..." ile kırpılmasını önle */
+      [class*="right-panel"],
+      [class*="rightPanel"],
+      [class*="drawer"],
+      [class*="sidebar-right"] {
+        min-width: 390px !important;
+        width: clamp(390px, 32vw, 480px) !important;
+      }
+
+      [role="tablist"],
+      [class*="tabs"],
+      [class*="tab-list"] {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        overflow-x: auto !important;
+        scrollbar-width: none;
+      }
+
+      [role="tablist"]::-webkit-scrollbar,
+      [class*="tabs"]::-webkit-scrollbar,
+      [class*="tab-list"]::-webkit-scrollbar {
+        display: none;
+      }
+
+      [role="tab"],
+      [role="tablist"] button,
+      [class*="tabs"] > button,
+      [class*="tab-list"] > button {
+        flex: 1 0 auto !important;
+        min-width: max-content !important;
+        white-space: nowrap !important;
+        text-overflow: clip !important;
+        overflow: visible !important;
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        font-size: 13px !important;
+      }
+
+      /* Alt yatay menü modu aktif edildiğinde (data-eymen-menu="bottom") */
+      html[data-eymen-menu="bottom"] body {
+        padding-bottom: 64px !important;
+      }
+
+      html[data-eymen-menu="bottom"] #eymen-bottom-nav {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px;
+        background: rgba(10, 15, 26, 0.96);
+        border-top: 1px solid rgba(255, 255, 255, 0.14);
+        backdrop-filter: blur(8px);
+      }
+
+      html[data-eymen-menu="bottom"] #eymen-bottom-nav button,
+      html[data-eymen-menu="bottom"] #eymen-bottom-nav [role="tab"] {
+        flex: 1 1 0;
+        min-width: 0;
+        white-space: nowrap;
+        padding: 8px 10px !important;
+        font-size: 13px !important;
+      }
     </style>
   </head>
   <body class="bg-[var(--bg)] text-[var(--ink)] antialiased">
     <div id="root"></div>
     <script type="module" src="./src/main.tsx"></script>
+
+    <script>
+      (function eymenMenuPlacement() {
+        // Yatay alt menüye almak isterseniz "bottom", sağda geniş tutmak isterseniz "right" yapın
+        const MENU_MODE = "right";
+
+        function syncMenuLayout() {
+          document.documentElement.setAttribute("data-eymen-menu", MENU_MODE);
+
+          const tabButtons = Array.from(document.querySelectorAll("button, [role='tab']"))
+            .filter((el) => {
+              if (el.closest("#eymen-bottom-nav")) return false;
+              const label = (el.textContent || "").trim();
+              return /^(Kan|Fil|Rad|Aya)/i.test(label) && label.length <= 24;
+            });
+
+          tabButtons.forEach((btn) => {
+            btn.style.whiteSpace = "nowrap";
+            btn.style.flex = "1 0 auto";
+            btn.style.minWidth = "max-content";
+            btn.style.overflow = "visible";
+            btn.style.textOverflow = "clip";
+          });
+
+          if (MENU_MODE !== "bottom" || tabButtons.length < 2) return;
+
+          let bottomNav = document.getElementById("eymen-bottom-nav");
+          if (!bottomNav) {
+            bottomNav = document.createElement("div");
+            bottomNav.id = "eymen-bottom-nav";
+            document.body.appendChild(bottomNav);
+          }
+
+          tabButtons.forEach((btn) => {
+            if (btn.parentElement !== bottomNav) {
+              bottomNav.appendChild(btn);
+            }
+          });
+        }
+
+        window.addEventListener("DOMContentLoaded", syncMenuLayout);
+        const observer = new MutationObserver(syncMenuLayout);
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        setTimeout(syncMenuLayout, 500);
+        setTimeout(syncMenuLayout, 1500);
+      })();
+    </script>
   </body>
 </html>
