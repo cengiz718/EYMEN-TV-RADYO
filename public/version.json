@@ -1,6 +1,6 @@
 {
-  "versionCode": 7,
-  "versionName": "7.0.0",
+  "versionCode": 8,
+  "versionName": "7.1.0",
   "apkUrl": "https://github.com/cengiz718/EYMEN-TV-RADYO/releases/latest/download/app-release.apk",
-  "releaseNotes": "Yatay TV ve telefonda alt menü, tam uygulama kapanışı ve otomatik güncelleme sistemi iyileştirildi."
+  "releaseNotes": "TV ve telefonda yatay görünüm iyileştirildi; kapat/çık düğmesi Android uygulamasını sonlandırır; güncelleme kontrolü daha güvenilir kaynaktan yapılır."
 }
