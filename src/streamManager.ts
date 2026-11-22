@@ -38,15 +38,20 @@ export interface EymenStreamControllerOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 8000;
-const FOREIGN_BLOCK_REGEX = /\b(GERMANY|ALMANYA|LIEBESFILM|BUNDESLIGA|SKY DE|ZDF|RTL DE|PRO7 DE|ENGLISH|UK CHANNEL|USA CHANNEL|ARABIC|KURDISH)\b/i;
-const TURKISH_ALLOW_REGEX = /[çğıöşüÇĞİÖŞÜ]|\b(TR|TURK|TURKIYE|TURKCE|TRT|ATV|SHOW|STAR|KANAL|TV8|NOW|FOX|HABER|SPOR|BEYAZ|TELE|HALK|SOZCU|ULKE|A SPOR|A HABER|NTV|CNN TURK|TGRT|KRAL|POWER|JOY|FENOMEN|PAL|ALEM|SLOW|ARABESK|TURKU|RADYO|RADIO|FM|SINEMA|DIZI|BELGESEL|COCUK|MINIKA)\b/i;
+const FOREIGN_BLOCK_REGEX =
+  /\b(GERMANY|ALMANYA|LIEBESFILM|BUNDESLIGA|SKY DE|ZDF|RTL DE|PRO7 DE|ENGLISH|UK CHANNEL|USA CHANNEL|ARABIC|KURDISH)\b/i;
+const TURKISH_ALLOW_REGEX =
+  /[çğıöşüÇĞİÖŞÜ]|\b(TR|TURK|TURKIYE|TURKCE|TRT|ATV|SHOW|STAR|KANAL|TV8|NOW|FOX|HABER|SPOR|BEYAZ|TELE|HALK|SOZCU|ULKE|A SPOR|A HABER|NTV|CNN TURK|TGRT|KRAL|POWER|JOY|FENOMEN|PAL|ALEM|SLOW|ARABESK|TURKU|RADYO|RADIO|FM|SINEMA|DIZI|BELGESEL|COCUK|MINIKA)\b/i;
 
 function isValidUrl(url: unknown): url is string {
   return typeof url === "string" && /^https?:\/\//i.test(url.trim());
 }
 
 function cleanStreamTitle(value: string): string {
-  return value.replace(/\s+/g, " ").replace(/^\s*\d+\s*-\s*/, "").trim();
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/^\s*\d+\s*-\s*/, "")
+    .trim();
 }
 
 export function isTurkishStream(title: string, group = ""): boolean {
@@ -65,13 +70,27 @@ export function detectTurkishGroup(title: string, category: ActiveMediaCategory)
     if (/HABER|SPOR|NTV/.test(text)) return "Haber & Spor Radyo";
     return "Genel Radyo";
   }
-  if (/TRT\s*1|ATV|SHOW|STAR|KANAL\s*D|TV\s*8|NOW|FOX|BEYAZ|KANAL\s*7|TEVE2/.test(text)) return "Ulusal";
-  if (/HABER|NTV|CNN|HALK|SÖZCÜ|SOZCU|TELE\s*1|ÜLKE|ULKE|TGRT|KRT|FLASH|BLOOMBERG/.test(text)) return "Haber";
-  if (/SPOR|SPORT|BEIN|S\s*SPORT|TİVİBU|TIVIBU|FB\s*TV|GS\s*TV|BJK/.test(text)) return "Spor";
-  if (/SİNEMA|SINEMA|FİLM|FILM|DİZİ|DIZI/.test(text)) return "Sinema & Dizi";
-  if (/ÇOCUK|COCUK|MİNİKA|MINIKA|CARTOON/.test(text)) return "Çocuk";
-  if (/BELGESEL|NATIONAL|DISCOVERY|ANIMAL/.test(text)) return "Belgesel";
-  if (/YEREL|BELEDİYE|BELEDIYE/.test(text)) return "Yerel";
+  if (/TRT\s*1|ATV|SHOW|STAR|KANAL\s*D|TV\s*8|NOW|FOX|BEYAZ|KANAL\s*7|TEVE2/.test(text)) {
+    return "Ulusal";
+  }
+  if (/HABER|NTV|CNN|HALK|SÖZCÜ|SOZCU|TELE\s*1|ÜLKE|ULKE|TGRT|KRT|FLASH|BLOOMBERG/.test(text)) {
+    return "Haber";
+  }
+  if (/SPOR|SPORT|BEIN|S\s*SPORT|TİVİBU|TIVIBU|FB\s*TV|GS\s*TV|BJK/.test(text)) {
+    return "Spor";
+  }
+  if (/SİNEMA|SINEMA|FİLM|FILM|DİZİ|DIZI/.test(text)) {
+    return "Sinema & Dizi";
+  }
+  if (/ÇOCUK|COCUK|MİNİKA|MINIKA|CARTOON/.test(text)) {
+    return "Çocuk";
+  }
+  if (/BELGESEL|NATIONAL|DISCOVERY|ANIMAL/.test(text)) {
+    return "Belgesel";
+  }
+  if (/YEREL|BELEDİYE|BELEDIYE/.test(text)) {
+    return "Yerel";
+  }
   return "Genel";
 }
 
@@ -79,7 +98,9 @@ function parseAttributes(line: string): Record<string, string> {
   const attributes: Record<string, string> = {};
   const pattern = /([\w-]+)="([^"]*)"/g;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(line)) !== null) attributes[match[1].toLowerCase()] = match[2];
+  while ((match = pattern.exec(line)) !== null) {
+    attributes[match[1].toLowerCase()] = match[2];
+  }
   return attributes;
 }
 
@@ -111,14 +132,17 @@ function parseM3u(text: string, requestedCategory: ActiveMediaCategory): MediaIt
       pending = null;
       continue;
     }
-    const id = `${category}-${items.length}-${pending.title.toLocaleLowerCase("tr-TR").replace(/[^a-z0-9]+/g, "-")}`;
+    const cleanUrl = line.trim();
+    const id = `${category}-${items.length}-${pending.title
+      .toLocaleLowerCase("tr-TR")
+      .replace(/[^a-z0-9]+/g, "-")}`;
     items.push({
       id,
       title: pending.title,
       category,
       group: pending.group || detectTurkishGroup(pending.title, category),
       logo: pending.logo,
-      sources: [{ id: `${id}-source-1`, label: "Ana yayın", url: line, priority: 1 }],
+      sources: [{ id: `${id}-source-1`, label: "Ana yayın", url: cleanUrl, priority: 1 }],
     });
     pending = null;
   }
@@ -146,37 +170,58 @@ function normalizeJsonCatalog(value: unknown, category: ActiveMediaCategory): Me
     const sources: StreamSource[] = rawSources.flatMap((source, sourceIndex) => {
       if (!source || typeof source !== "object") return [];
       const candidate = source as Record<string, unknown>;
-      const url = candidate.url ?? candidate.src ?? candidate.link;
-      if (!isValidUrl(url)) return [];
-      return [{
-        id: String(candidate.id ?? `${category}-${index}-source-${sourceIndex}`),
-        label: String(candidate.label ?? candidate.name ?? (sourceIndex === 0 ? "Ana yayın" : `Kaynak ${sourceIndex + 1}`)),
-        url,
-        priority: Number(candidate.priority ?? sourceIndex + 1),
-      }];
+      const rawUrl = candidate.url ?? candidate.src ?? candidate.link;
+      if (!isValidUrl(rawUrl)) return [];
+      return [
+        {
+          id: String(candidate.id ?? `${category}-${index}-source-${sourceIndex}`),
+          label: String(
+            candidate.label ??
+              candidate.name ??
+              (sourceIndex === 0 ? "Ana yayın" : `Kaynak ${sourceIndex + 1}`)
+          ),
+          url: rawUrl.trim(),
+          priority: Number(candidate.priority ?? sourceIndex + 1),
+        },
+      ];
     });
     if (!title || sources.length === 0 || !isTurkishStream(title, group)) return [];
-    return [{
-      id: String(item.id ?? `${category}-${index}-${title.toLocaleLowerCase("tr-TR").replace(/[^a-z0-9]+/g, "-")}`),
-      title,
-      category,
-      group: group || detectTurkishGroup(title, category),
-      logo: typeof item.logo === "string" ? item.logo : typeof item.image === "string" ? item.image : undefined,
-      sources: sources.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)),
-    }];
+    return [
+      {
+        id: String(
+          item.id ??
+            `${category}-${index}-${title.toLocaleLowerCase("tr-TR").replace(/[^a-z0-9]+/g, "-")}`
+        ),
+        title,
+        category,
+        group: group || detectTurkishGroup(title, category),
+        logo:
+          typeof item.logo === "string"
+            ? item.logo
+            : typeof item.image === "string"
+              ? item.image
+              : undefined,
+        sources: sources.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)),
+      },
+    ];
   });
 }
 
-async function loadCatalog(urls: string[] | undefined, category: ActiveMediaCategory): Promise<MediaItem[]> {
+async function loadCatalog(
+  urls: string[] | undefined,
+  category: ActiveMediaCategory
+): Promise<MediaItem[]> {
   if (!urls?.length) return [];
-  const results = await Promise.allSettled(urls.map(async (url) => {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Liste alınamadı: HTTP ${response.status}`);
-    const body = await response.text();
-    if (body.trimStart().startsWith("#EXTM3U")) return parseM3u(body, category);
-    return normalizeJsonCatalog(JSON.parse(body), category);
-  }));
-  return results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const results = await Promise.allSettled(
+    urls.map(async (url) => {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Liste alınamadı: HTTP ${response.status}`);
+      const body = await response.text();
+      if (body.trimStart().startsWith("#EXTM3U")) return parseM3u(body, category);
+      return normalizeJsonCatalog(JSON.parse(body), category);
+    })
+  );
+  return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
 export async function loadAllCatalogs(
@@ -213,7 +258,10 @@ export class EymenStreamController {
   private readonly timeoutMs: number;
   private readonly onStatus?: (event: StreamStatusEvent) => void;
 
-  constructor(private readonly media: HTMLVideoElement, options: EymenStreamControllerOptions = {}) {
+  constructor(
+    private readonly media: HTMLVideoElement,
+    options: EymenStreamControllerOptions = {}
+  ) {
     this.timeoutMs = options.failoverTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.onStatus = options.onStatus;
     this.media.addEventListener("playing", this.handlePlaying);
@@ -281,7 +329,11 @@ export class EymenStreamController {
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (token !== this.attemptToken) return;
         void this.media.play().catch(() => {
-          this.emit({ state: "loading", message: "Oynatmak için ekrana dokunun veya OK tuşuna basın.", source });
+          this.emit({
+            state: "loading",
+            message: "Oynatmak için ekrana dokunun veya OK tuşuna basın.",
+            source,
+          });
         });
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -293,7 +345,11 @@ export class EymenStreamController {
       this.media.src = source.url;
       this.media.load();
       void this.media.play().catch(() => {
-        this.emit({ state: "loading", message: "Oynatmak için ekrana dokunun veya OK tuşuna basın.", source });
+        this.emit({
+          state: "loading",
+          message: "Oynatmak için ekrana dokunun veya OK tuşuna basın.",
+          source,
+        });
       });
     }
   }
