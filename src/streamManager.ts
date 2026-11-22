@@ -35,10 +35,18 @@ export type PlayerStatusListener = (info: {
   isError?: boolean;
 }) => void;
 
+interface HlsErrorData {
+  fatal?: boolean;
+  type?: string;
+  details?: string;
+}
+
 interface HlsInstance {
   loadSource: (url: string) => void;
   attachMedia: (media: HTMLMediaElement) => void;
-  on: (event: string, cb: (_event: string, data: { fatal?: boolean }) => void) => void;
+  startLoad: () => void;
+  recoverMediaError: () => void;
+  on: (event: string, cb: (_event: string, data: HlsErrorData) => void) => void;
   destroy: () => void;
 }
 
@@ -48,10 +56,27 @@ interface HlsConstructor {
   Events: {
     ERROR: string;
   };
+  ErrorTypes?: {
+    NETWORK_ERROR?: string;
+    MEDIA_ERROR?: string;
+  };
 }
 
 function getWindowHls(): HlsConstructor | undefined {
   return (window as unknown as { Hls?: HlsConstructor }).Hls;
+}
+
+function isValidMediaItem(item: unknown): item is MediaItem {
+  if (!item || typeof item !== "object") return false;
+  const candidate = item as Partial<MediaItem>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.title === "string" &&
+    Array.isArray(candidate.sources) &&
+    candidate.sources.some(
+      (s) => s && typeof s.url === "string" && s.url.trim().length > 0
+    )
+  );
 }
 
 export function parseM3uToMediaItems(
@@ -75,11 +100,14 @@ export function parseM3uToMediaItems(
         commaIdx >= 0 ? line.slice(commaIdx + 1).trim() : "İsimsiz Yayın";
 
       pendingMeta = {
-        title,
+        title: title || "İsimsiz Yayın",
         group: groupMatch?.[1]?.trim() || "Genel",
         logo: logoMatch?.[1]?.trim() || undefined,
       };
-    } else if (!line.startsWith("#") && pendingMeta) {
+    } else if (line.startsWith("#")) {
+      // #EXTVLCOPT gibi ek etiketlerde pendingMeta korunur
+      continue;
+    } else if (pendingMeta && /^https?:\/\//i.test(line)) {
       const key = `${category}:${pendingMeta.title.toLowerCase()}`;
       const existing = groupedMap.get(key);
 
@@ -129,6 +157,7 @@ export class EymenStreamController {
   private hlsInstance: HlsInstance | null = null;
   private sessionToken = 0;
   private hasStartedPlaying = false;
+  private hlsMediaRecoveryAttempted = false;
 
   constructor(
     mediaElement: HTMLVideoElement | HTMLAudioElement,
@@ -156,12 +185,12 @@ export class EymenStreamController {
       }
       this.hlsInstance = null;
     }
+    this.hlsMediaRecoveryAttempted = false;
   }
 
   private isUrlRecentlyFailed(url: string): boolean {
     const ts = this.failedTimestamps.get(url);
     if (!ts) return false;
-    // 60 saniye sonra tekrar denenebilir olsun
     if (Date.now() - ts > 60_000) {
       this.failedTimestamps.delete(url);
       return false;
@@ -192,13 +221,23 @@ export class EymenStreamController {
     });
 
     this.mediaEl.addEventListener("error", () => {
-      if (!this.activeItem) return;
-      this.switchToNextSource("Yayın hatası oluştu");
+      const token = this.sessionToken;
+      if (!this.activeItem || token !== this.sessionToken) return;
+      this.switchToNextSource("Yayın hatası oluştu", token);
     });
 
     this.mediaEl.addEventListener("stalled", () => {
-      if (!this.activeItem || this.hasStartedPlaying) return;
-      this.scheduleFailover("Bağlantı yavaşladı");
+      const token = this.sessionToken;
+      if (!this.activeItem || token !== this.sessionToken) return;
+      this.scheduleFailover("Bağlantı yavaşladı", token);
+    });
+
+    this.mediaEl.addEventListener("ended", () => {
+      const token = this.sessionToken;
+      if (!this.activeItem || token !== this.sessionToken) return;
+      if (this.activeSources.length > 1) {
+        this.switchToNextSource("Yayın kesildi, yedek deneniyor", token);
+      }
     });
   }
 
@@ -207,19 +246,22 @@ export class EymenStreamController {
     this.failoverTimer = window.setTimeout(() => {
       if (token !== this.sessionToken || !this.activeItem) return;
       if (!this.hasStartedPlaying || this.mediaEl.readyState < 2) {
-        this.switchToNextSource(reason);
+        this.switchToNextSource(reason, token);
       }
     }, this.timeoutMs);
   }
 
   public playItem(item: MediaItem, startIndex = 0): void {
-    if (!item.sources || item.sources.length === 0) return;
+    const validSources = (item.sources || []).filter(
+      (s) => typeof s.url === "string" && s.url.trim().length > 0
+    );
+    if (validSources.length === 0) return;
 
     this.sessionToken += 1;
     const currentToken = this.sessionToken;
 
     this.activeItem = item;
-    this.activeSources = [...item.sources].sort(
+    this.activeSources = [...validSources].sort(
       (a, b) => (a.priority ?? 99) - (b.priority ?? 99)
     );
 
@@ -227,15 +269,26 @@ export class EymenStreamController {
       (s, idx) => idx >= startIndex && !this.isUrlRecentlyFailed(s.url)
     );
     this.activeSourceIndex =
-      candidateIdx >= 0 ? candidateIdx : Math.min(startIndex, this.activeSources.length - 1);
+      candidateIdx >= 0
+        ? candidateIdx
+        : Math.min(startIndex, this.activeSources.length - 1);
 
     const chosen = this.activeSources[this.activeSourceIndex];
     this.emitStatus(`${chosen.label} bağlanıyor...`, false);
     this.loadSource(chosen.url, currentToken);
   }
 
-  public switchToNextSource(reason = "Kaynak değiştiriliyor"): boolean {
-    if (!this.activeItem || this.activeSources.length === 0) return false;
+  public switchToNextSource(
+    reason = "Kaynak değiştiriliyor",
+    expectedToken = this.sessionToken
+  ): boolean {
+    if (
+      expectedToken !== this.sessionToken ||
+      !this.activeItem ||
+      this.activeSources.length === 0
+    ) {
+      return false;
+    }
 
     this.sessionToken += 1;
     const currentToken = this.sessionToken;
@@ -254,7 +307,6 @@ export class EymenStreamController {
       return true;
     }
 
-    // Tüm yedekler denendiyse hatalı kayıtları temizleyip son kez ilk kaynağa dönme şansı bırak
     this.clearTimer();
     this.destroyHls();
     this.emitStatus("Tüm yedek kaynaklar denendi, yayın açılamadı.", true);
@@ -276,6 +328,8 @@ export class EymenStreamController {
   }
 
   private loadSource(url: string, token: number): void {
+    if (token !== this.sessionToken) return;
+
     this.clearTimer();
     this.destroyHls();
     this.hasStartedPlaying = false;
@@ -294,10 +348,24 @@ export class EymenStreamController {
       hls.attachMedia(this.mediaEl);
 
       hls.on(HlsLib.Events.ERROR, (_ev, data) => {
-        if (token !== this.sessionToken) return;
-        if (data?.fatal) {
-          this.switchToNextSource("HLS akış hatası");
+        if (token !== this.sessionToken || !this.hlsInstance) return;
+        if (!data?.fatal) return;
+
+        const mediaErrType = HlsLib.ErrorTypes?.MEDIA_ERROR;
+        const netErrType = HlsLib.ErrorTypes?.NETWORK_ERROR;
+
+        if (data.type === mediaErrType && !this.hlsMediaRecoveryAttempted) {
+          this.hlsMediaRecoveryAttempted = true;
+          this.emitStatus("Medya akışı kurtarılıyor...", true);
+          this.hlsInstance.recoverMediaError();
+          return;
         }
+
+        if (data.type === netErrType) {
+          this.hlsInstance.startLoad();
+        }
+
+        this.switchToNextSource("HLS akış hatası", token);
       });
 
       this.mediaEl.play().catch(() => {});
@@ -340,7 +408,9 @@ export async function loadAllCatalogs(
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return null;
       const data = await res.json();
-      return Array.isArray(data) ? data : null;
+      if (!Array.isArray(data)) return null;
+      const valid = data.filter(isValidMediaItem);
+      return valid.length > 0 ? valid : null;
     } catch {
       return null;
     }
