@@ -121,14 +121,24 @@ function parseM3u(text: string, requestedCategory: ActiveMediaCategory): MediaIt
         title,
         group,
         logo: attrs["tvg-logo"],
-        radio: attrs.radio === "true" || /RADYO|RADIO/i.test(group),
+        // Listede grup adı "Turkey" olduğu için radyo türünü kanal adından da algıla.
+        radio:
+          attrs.radio === "true" ||
+          /RADYO|RADIO/i.test(group) ||
+          /\\b(RADYO|RADIO|FM)\\b/i.test(title),
       };
       continue;
     }
     if (line.startsWith("#") || !pending || !isValidUrl(line)) continue;
 
-    const category: ActiveMediaCategory = pending.radio ? "radio" : requestedCategory;
-    if (category !== requestedCategory || !isTurkishStream(pending.title, pending.group)) {
+    const category: ActiveMediaCategory = pending.radio ? "radio" : "tv";
+    const isMovieOrSeries =
+      /\\b(SINEMA|SİNEMA|CINEMA|MOVIE|FILM|FİLM|DIZI|DİZİ|SERIES)\\b/i.test(pending.title);
+    if (
+      category !== requestedCategory ||
+      (requestedCategory === "tv" && isMovieOrSeries) ||
+      !isTurkishStream(pending.title, pending.group)
+    ) {
       pending = null;
       continue;
     }
