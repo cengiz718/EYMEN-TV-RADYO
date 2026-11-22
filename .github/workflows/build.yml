@@ -62,7 +62,7 @@ jobs:
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/eymen-release.jks" >> "$GITHUB_ENV"
 
       - name: Release APK oluştur
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
 
       - name: APK imzasını doğrula
         run: $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n 1)/apksigner verify app/build/outputs/apk/release/app-release.apk
