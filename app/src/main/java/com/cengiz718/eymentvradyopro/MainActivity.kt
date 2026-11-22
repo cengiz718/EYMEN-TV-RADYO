@@ -6,6 +6,7 @@ import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
@@ -143,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Eymen TV & Radyo Güncelleniyor")
                 .setDescription("Yeni sürüm indiriliyor...")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationUri(Uri.fromFile(destFile))
+                 .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "eymen-update.apk")
 
             val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             downloadId = dm.enqueue(request)
@@ -157,6 +158,15 @@ class MainActivity : AppCompatActivity() {
         try {
             val apkFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "eymen-update.apk")
             if (!apkFile.exists()) return
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(settingsIntent)
+                Toast.makeText(this, "Güncellemenin kurulması için bu uygulamaya izin verin.", Toast.LENGTH_LONG).show()
+                return
+            }
 
             val apkUri = FileProvider.getUriForFile(
                 this,
@@ -175,12 +185,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
-            webView.goBack()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
+    private fun closeAppCompletely() {
+        try {
+            webView.stopLoading()
+            webView.loadUrl("about:blank")
+            webView.clearHistory()
+            webView.destroy()
+        } catch (_: Exception) { }
+        finishAndRemoveTask()
+    }
+
+    override fun onBackPressed() {
+        closeAppCompletely()
     }
 
     override fun onDestroy() {
