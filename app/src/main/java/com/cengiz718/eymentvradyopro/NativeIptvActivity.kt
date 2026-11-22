@@ -9,22 +9,22 @@ import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -59,7 +59,7 @@ class NativeIptvActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         immersive()
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         buildPlayer()
         buildScreen()
         val savedUrl = prefs.getString("playlist_url", "").orEmpty()
@@ -78,6 +78,7 @@ class NativeIptvActivity : Activity() {
                 override fun onPlayerError(error: PlaybackException) {
                     status.text = "Yayın hatası: ${error.errorCodeName}"
                 }
+
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_BUFFERING) status.text = "Yayın yükleniyor..."
                     if (state == Player.STATE_READY) {
@@ -90,20 +91,29 @@ class NativeIptvActivity : Activity() {
 
     private fun focusBackground(): StateListDrawable {
         val drawable = StateListDrawable()
-        drawable.addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
-            setColor(Color.rgb(65, 73, 88))
-            setStroke(dp(3), accent)
-            cornerRadius = dp(9).toFloat()
-        })
-        drawable.addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply {
-            setColor(Color.rgb(80, 88, 104))
-            cornerRadius = dp(9).toFloat()
-        })
-        drawable.addState(intArrayOf(), GradientDrawable().apply {
-            setColor(Color.rgb(31, 39, 52))
-            setStroke(dp(1), Color.rgb(76, 86, 104))
-            cornerRadius = dp(9).toFloat()
-        })
+        drawable.addState(
+            intArrayOf(android.R.attr.state_focused),
+            GradientDrawable().apply {
+                setColor(Color.rgb(65, 73, 88))
+                setStroke(dp(3), accent)
+                cornerRadius = dp(9).toFloat()
+            }
+        )
+        drawable.addState(
+            intArrayOf(android.R.attr.state_pressed),
+            GradientDrawable().apply {
+                setColor(Color.rgb(80, 88, 104))
+                cornerRadius = dp(9).toFloat()
+            }
+        )
+        drawable.addState(
+            intArrayOf(),
+            GradientDrawable().apply {
+                setColor(Color.rgb(31, 39, 52))
+                setStroke(dp(1), Color.rgb(76, 86, 104))
+                cornerRadius = dp(9).toFloat()
+            }
+        )
         return drawable
     }
 
@@ -166,9 +176,7 @@ class NativeIptvActivity : Activity() {
         }
 
         if (landscape) {
-            // Yatay TV/Mi Box ve yatay telefon: sağdaki menü yerine alt menü.
             root.orientation = LinearLayout.VERTICAL
-
             root.addView(playerView, LinearLayout.LayoutParams(-1, 0, 1f))
 
             val actionsScroll = HorizontalScrollView(this).apply {
@@ -179,16 +187,26 @@ class NativeIptvActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            actions.addView(makeButton("⚙ Ayarlar") { showSettings() },
-                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("⌕ Kanal ara") { askSearch() },
-                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("↻ Liste") { reloadList() },
-                LinearLayout.LayoutParams(dp(120), dp(48)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("‹ Önceki") { playRelative(-1) },
-                LinearLayout.LayoutParams(dp(115), dp(48)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("Sonraki ›") { playRelative(1) },
-                LinearLayout.LayoutParams(dp(115), dp(48)))
+            actions.addView(
+                makeButton("⚙ Ayarlar") { showSettings() },
+                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("⌕ Kanal ara") { askSearch() },
+                LinearLayout.LayoutParams(dp(130), dp(48)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("↻ Liste") { reloadList() },
+                LinearLayout.LayoutParams(dp(120), dp(48)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("‹ Önceki") { playRelative(-1) },
+                LinearLayout.LayoutParams(dp(115), dp(48)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("Sonraki ›") { playRelative(1) },
+                LinearLayout.LayoutParams(dp(115), dp(48))
+            )
             actionsScroll.addView(actions)
             root.addView(actionsScroll, LinearLayout.LayoutParams(-1, dp(54)))
 
@@ -201,11 +219,26 @@ class NativeIptvActivity : Activity() {
                 isFillViewport = false
             }
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            actions.addView(makeButton("⚙ Ayarlar") { showSettings() }, LinearLayout.LayoutParams(dp(112), dp(46)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("⌕ Kanal ara") { askSearch() }, LinearLayout.LayoutParams(dp(112), dp(46)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("↻ Listeyi yükle") { reloadList() }, LinearLayout.LayoutParams(dp(132), dp(46)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("‹ Önceki") { playRelative(-1) }, LinearLayout.LayoutParams(dp(104), dp(46)).apply { marginEnd = dp(6) })
-            actions.addView(makeButton("Sonraki ›") { playRelative(1) }, LinearLayout.LayoutParams(dp(104), dp(46)))
+            actions.addView(
+                makeButton("⚙ Ayarlar") { showSettings() },
+                LinearLayout.LayoutParams(dp(112), dp(46)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("⌕ Kanal ara") { askSearch() },
+                LinearLayout.LayoutParams(dp(112), dp(46)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("↻ Listeyi yükle") { reloadList() },
+                LinearLayout.LayoutParams(dp(132), dp(46)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("‹ Önceki") { playRelative(-1) },
+                LinearLayout.LayoutParams(dp(104), dp(46)).apply { marginEnd = dp(6) }
+            )
+            actions.addView(
+                makeButton("Sonraki ›") { playRelative(1) },
+                LinearLayout.LayoutParams(dp(104), dp(46))
+            )
             actionsScroll.addView(actions)
             root.addView(actionsScroll, LinearLayout.LayoutParams(-1, dp(50)))
             root.addView(playerView, LinearLayout.LayoutParams(-1, dp(238)))
@@ -232,24 +265,37 @@ class NativeIptvActivity : Activity() {
                 if (url.startsWith("http://") || url.startsWith("https://")) {
                     prefs.edit().putString("playlist_url", url).apply()
                     fetch(url)
-                } else status.text = "Geçerli bir http veya https adresi girin."
+                } else {
+                    status.text = "Geçerli bir http veya https adresi girin."
+                }
             }
             .setNegativeButton("İptal", null)
             .show()
     }
 
     private fun showSettings() {
-        val options = arrayOf("Kanal listesini yeniden yükle", "Liste adresini değiştir", "Kanal arama", "Önceki kanal", "Sonraki kanal", "Ana menüye dön")
-        AlertDialog.Builder(this).setTitle("Eymen TV ayarları").setItems(options) { _, which ->
-            when (which) {
-                0 -> reloadList()
-                1 -> askUrl()
-                2 -> askSearch()
-                3 -> playRelative(-1)
-                4 -> playRelative(1)
-                5 -> finish()
+        val options = arrayOf(
+            "Kanal listesini yeniden yükle",
+            "Liste adresini değiştir",
+            "Kanal arama",
+            "Önceki kanal",
+            "Sonraki kanal",
+            "Ana menüye dön"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Eymen TV ayarları")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> reloadList()
+                    1 -> askUrl()
+                    2 -> askSearch()
+                    3 -> playRelative(-1)
+                    4 -> playRelative(1)
+                    5 -> finish()
+                }
             }
-        }.setNegativeButton("Kapat", null).show()
+            .setNegativeButton("Kapat", null)
+            .show()
     }
 
     private fun reloadList() {
@@ -279,7 +325,9 @@ class NativeIptvActivity : Activity() {
                     status.text = if (parsed.isEmpty()) "Kanal bulunamadı." else "${parsed.size} kanal hazır."
                 }
             } catch (error: Exception) {
-                runOnUiThread { status.text = "Liste yüklenemedi: ${error.message ?: "Bağlantı hatası"}" }
+                runOnUiThread {
+                    status.text = "Liste yüklenemedi: ${error.message ?: "Bağlantı hatası"}"
+                }
             } finally {
                 connection?.disconnect()
             }
@@ -302,8 +350,11 @@ class NativeIptvActivity : Activity() {
                 line.isNotBlank() && !line.startsWith("#") -> {
                     try {
                         val resolved = URL(URL(baseUrl), line).toString()
-                        if (resolved.startsWith("http://") || resolved.startsWith("https://")) result.add(TvChannel(name, resolved, group))
-                    } catch (_: Exception) { }
+                        if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
+                            result.add(TvChannel(name, resolved, group))
+                        }
+                    } catch (_: Exception) {
+                    }
                     name = "Kanal"
                     group = "Genel"
                 }
@@ -326,22 +377,34 @@ class NativeIptvActivity : Activity() {
             }
             channelList.addView(row, LinearLayout.LayoutParams(-1, dp(62)).apply { bottomMargin = dp(4) })
         }
-        if (items.isNotEmpty() && currentIndex < 0 && !isFinishing) channelList.getChildAt(0)?.requestFocus()
+        if (items.isNotEmpty() && currentIndex < 0 && !isFinishing) {
+            channelList.getChildAt(0)?.requestFocus()
+        }
     }
 
     private fun askSearch() {
         val input = EditText(this).apply { hint = "Kanal adı veya kategori" }
-        AlertDialog.Builder(this).setTitle("Kanal ara").setView(input)
+        AlertDialog.Builder(this)
+            .setTitle("Kanal ara")
+            .setView(input)
             .setPositiveButton("Ara") { _, _ ->
                 val q = input.text.toString().trim()
-                val filtered = if (q.isBlank()) channels else channels.filter {
-                    it.name.contains(q, true) || it.group.contains(q, true)
+                val filtered = if (q.isBlank()) {
+                    channels
+                } else {
+                    channels.filter {
+                        it.name.contains(q, true) || it.group.contains(q, true)
+                    }
                 }
                 renderChannels(filtered)
                 status.text = "${filtered.size} sonuç bulundu."
             }
-            .setNeutralButton("Tüm kanallar") { _, _ -> renderChannels(channels); status.text = "${channels.size} kanal gösteriliyor." }
-            .setNegativeButton("İptal", null).show()
+            .setNeutralButton("Tüm kanallar") { _, _ ->
+                renderChannels(channels)
+                status.text = "${channels.size} kanal gösteriliyor."
+            }
+            .setNegativeButton("İptal", null)
+            .show()
     }
 
     private fun play(channel: TvChannel) {
@@ -359,17 +422,30 @@ class NativeIptvActivity : Activity() {
             status.text = "Önce kanal listesi yükleyin."
             return
         }
-        val next = (currentIndex + direction + channels.size) % channels.size
+        val base = if (currentIndex >= 0) currentIndex else 0
+        val next = (base + direction + channels.size) % channels.size
         play(channels[next])
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
-                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> { showSettings(); return true }
-                KeyEvent.KEYCODE_INFO -> { askSearch(); return true }
-                KeyEvent.KEYCODE_CHANNEL_UP -> { playRelative(1); return true }
-                KeyEvent.KEYCODE_CHANNEL_DOWN -> { playRelative(-1); return true }
+                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> {
+                    showSettings()
+                    return true
+                }
+                KeyEvent.KEYCODE_INFO -> {
+                    askSearch()
+                    return true
+                }
+                KeyEvent.KEYCODE_CHANNEL_UP -> {
+                    playRelative(1)
+                    return true
+                }
+                KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                    playRelative(-1)
+                    return true
+                }
             }
         }
         return super.dispatchKeyEvent(event)
@@ -396,7 +472,7 @@ class NativeIptvActivity : Activity() {
         player?.release()
         player = null
         io.shutdownNow()
-        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onDestroy()
     }
 }
