@@ -6,7 +6,9 @@ import {
   MediaItem,
 } from "./streamManager";
 
-const FALLBACK_CATALOG: Record<MediaCategory, MediaItem[]> = {
+type ActiveSection = Extract<MediaCategory, "tv" | "radio">;
+
+const FALLBACK_CATALOG: Record<ActiveSection, MediaItem[]> = {
   tv: [
     {
       id: "tv-1",
@@ -121,47 +123,11 @@ const FALLBACK_CATALOG: Record<MediaCategory, MediaItem[]> = {
       ],
     },
   ],
-  movie: [
-    {
-      id: "mov-1",
-      title: "Örnek Film 1",
-      category: "movie",
-      group: "Sinema",
-      sources: [
-        {
-          id: "mov-1-s1",
-          label: "Ana Sunucu",
-          url: "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
-          priority: 1,
-        },
-      ],
-    },
-  ],
-  series: [
-    {
-      id: "ser-1",
-      title: "Örnek Dizi • S01E01",
-      category: "series",
-      group: "1. Sezon",
-      season: 1,
-      episode: 1,
-      sources: [
-        {
-          id: "ser-1-s1",
-          label: "Ana Bölüm",
-          url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-          priority: 1,
-        },
-      ],
-    },
-  ],
 };
 
-const CATEGORY_LABELS: Record<MediaCategory, string> = {
+const CATEGORY_LABELS: Record<ActiveSection, string> = {
   tv: "TV",
   radio: "Radyo",
-  movie: "Film",
-  series: "Dizi",
 };
 
 const THEME = {
@@ -216,7 +182,7 @@ function BrandLogo({ accent }: { accent: string }) {
   );
 }
 
-type FocusColumn = "tv" | "radio" | "extra";
+type FocusColumn = ActiveSection;
 
 type FocusTarget = {
   column: FocusColumn;
@@ -228,12 +194,11 @@ export function App() {
   const controllerRef = useRef<EymenStreamController | null>(null);
   const tvCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const radioCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const extraCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const backupBtnRef = useRef<HTMLButtonElement | null>(null);
 
-  const [activeCategory, setActiveCategory] = useState<MediaCategory>("tv");
+  const [activeCategory, setActiveCategory] = useState<ActiveSection>("tv");
   const [catalogs, setCatalogs] =
-    useState<Record<MediaCategory, MediaItem[]>>(FALLBACK_CATALOG);
+    useState<Record<ActiveSection, MediaItem[]>>(FALLBACK_CATALOG);
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>({
     column: "tv",
@@ -254,15 +219,11 @@ export function App() {
 
   const tvItems = catalogs.tv || [];
   const radioItems = catalogs.radio || [];
-  const extraItems =
-    activeCategory === "movie" || activeCategory === "series"
-      ? catalogs[activeCategory] || []
-      : [];
 
-  const getPoolForColumn = (column: FocusColumn): Array<HTMLButtonElement | null> => {
-    if (column === "tv") return tvCardRefs.current;
-    if (column === "radio") return radioCardRefs.current;
-    return extraCardRefs.current;
+  const getPoolForColumn = (
+    column: FocusColumn
+  ): Array<HTMLButtonElement | null> => {
+    return column === "tv" ? tvCardRefs.current : radioCardRefs.current;
   };
 
   const focusElement = (target: FocusTarget) => {
@@ -287,9 +248,12 @@ export function App() {
     });
     controllerRef.current = controller;
 
-    loadAllCatalogs({}, FALLBACK_CATALOG)
+    loadAllCatalogs({}, FALLBACK_CATALOG as Record<MediaCategory, MediaItem[]>)
       .then((loaded) => {
-        setCatalogs(loaded);
+        setCatalogs({
+          tv: loaded.tv?.length ? loaded.tv : FALLBACK_CATALOG.tv,
+          radio: loaded.radio?.length ? loaded.radio : FALLBACK_CATALOG.radio,
+        });
       })
       .catch(() => {
         setCatalogs(FALLBACK_CATALOG);
@@ -306,9 +270,7 @@ export function App() {
     const initial: FocusTarget =
       activeCategory === "radio"
         ? { column: "radio", index: 0 }
-        : activeCategory === "movie" || activeCategory === "series"
-          ? { column: "extra", index: 0 }
-          : { column: "tv", index: 0 };
+        : { column: "tv", index: 0 };
     setFocusTarget(initial);
     const timer = window.setTimeout(() => {
       focusElement(initial);
@@ -369,7 +331,6 @@ export function App() {
   ) => {
     const tvLen = tvItems.length;
     const radioLen = radioItems.length;
-    const extraLen = extraItems.length;
 
     let next: FocusTarget | null = null;
 
@@ -378,8 +339,6 @@ export function App() {
         next = { column: "tv", index: index + 1 };
       } else if (column === "radio" && index + 1 < radioLen) {
         next = { column: "radio", index: index + 1 };
-      } else if (column === "extra" && index + 1 < extraLen) {
-        next = { column: "extra", index: index + 1 };
       }
     } else if (e.key === "ArrowUp") {
       if (index - 1 >= 0) {
@@ -388,14 +347,10 @@ export function App() {
     } else if (e.key === "ArrowRight") {
       if (column === "tv" && radioLen > 0) {
         next = { column: "radio", index: Math.min(index, radioLen - 1) };
-      } else if (column === "extra" && index + 1 < extraLen) {
-        next = { column: "extra", index: index + 1 };
       }
     } else if (e.key === "ArrowLeft") {
       if (column === "radio" && tvLen > 0) {
         next = { column: "tv", index: Math.min(index, tvLen - 1) };
-      } else if (column === "extra" && index - 1 >= 0) {
-        next = { column: "extra", index: index - 1 };
       }
     }
 
@@ -475,17 +430,24 @@ export function App() {
         <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
           <BrandLogo accent={theme.accent} />
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: "20px", fontWeight: 900, letterSpacing: "0.5px", overflowWrap: "anywhere" }}>
+            <div
+              style={{
+                fontSize: "20px",
+                fontWeight: 900,
+                letterSpacing: "0.5px",
+                overflowWrap: "anywhere",
+              }}
+            >
               EYMEN TV RADYO PRO
             </div>
             <div style={{ fontSize: "12px", color: theme.muted, fontWeight: 600 }}>
-              TV • Radyo • Film • Dizi
+              TV • Radyo
             </div>
           </div>
         </div>
 
         <nav style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          {(Object.keys(CATEGORY_LABELS) as MediaCategory[]).map((cat) => {
+          {(Object.keys(CATEGORY_LABELS) as ActiveSection[]).map((cat) => {
             const isActive = activeCategory === cat;
             return (
               <button
@@ -685,55 +647,103 @@ export function App() {
         </section>
       </main>
 
-      {extraItems.length > 0 && (
-        <section
+      <footer
+        style={{
+          padding: "12px 20px",
+          backgroundColor: theme.surface,
+          borderTop: `1px solid ${theme.border}`,
+          fontSize: "13px",
+          fontWeight: 600,
+          color: theme.muted,
+        }}
+      >
+        {statusMessage}
+      </footer>
+
+      {isPlayerOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
           style={{
-            margin: "0 20px 20px",
-            backgroundColor: theme.surface,
-            border: `1px solid ${theme.border}`,
-            borderRadius: "16px",
-            padding: "16px",
-            minWidth: 0,
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            backgroundColor: "rgba(0, 0, 0, 0.92)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            padding: "20px",
+            gap: "16px",
           }}
         >
-          <h2
-            style={{
-              margin: "0 0 14px",
-              fontSize: "18px",
-              fontWeight: 900,
-              color: theme.accent,
-            }}
-          >
-            {activeCategory === "movie" ? "🎬 Filmler" : "🎞️ Diziler"}
-          </h2>
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              justifyContent: "space-between",
               gap: "12px",
             }}
           >
-            {extraItems.map((item, idx) => {
-              const isFocused =
-                focusTarget.column === "extra" && focusTarget.index === idx;
-              return (
-                <button
-                  key={item.id}
-                  ref={(el) => {
-                    extraCardRefs.current[idx] = el;
-                  }}
-                  type="button"
-                  onFocus={() => setFocusTarget({ column: "extra", index: idx })}
-                  onKeyDown={(e) => handleColumnKeyDown(e, "extra", idx)}
-                  onClick={() => handleSelectItem(item, "extra", idx)}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "flex-start",
-                    gap: "6px",
-                    padding: "14px",
-                    borderRadius: "12px",
-                    border: isFocused
-                      ? `2px solid ${theme.focus}`
-                      : `1px solid ${theme.border}`,
-                    backgroundColor
+            <div>
+              <div style={{ fontSize: "20px", fontWeight: 900, color: "#f8fafc" }}>
+                {selectedItem?.title || "Yayın"}
+              </div>
+              <div style={{ fontSize: "13px", color: "#cbd5e1" }}>{statusMessage}</div>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                ref={backupBtnRef}
+                type="button"
+                onClick={handleSwitchBackup}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "10px",
+                  border: `1px solid ${theme.accent}`,
+                  backgroundColor: theme.card,
+                  color: "#f8fafc",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                🔄 Yedek Kaynak
+              </button>
+              <button
+                type="button"
+                onClick={handleClosePlayer}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "10px",
+                  border: "none",
+                  backgroundColor: "#ef4444",
+                  color: "#ffffff",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                ✕ Kapat
+              </button>
+            </div>
+          </div>
+
+          <video
+            ref={videoRef}
+            controls
+            autoPlay
+            playsInline
+            style={{
+              width: "100%",
+              maxHeight: "75vh",
+              borderRadius: "14px",
+              backgroundColor: "#000000",
+              flex: 1,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
