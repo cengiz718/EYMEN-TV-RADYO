@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private val versionJsonUrl = "https://raw.githubusercontent.com/cengiz718/EYMEN-TV-RADYO/main/public/version.json"
     private var downloadId: Long = -1L
     private var webViewDestroyed = false
+    private lateinit var updateManager: AppUpdateManager
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -115,7 +116,8 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(webView)
         webView.loadUrl(baseAppUrl)
-        checkForAppUpdate()
+        updateManager = AppUpdateManager(this)
+        updateManager.checkForUpdate()
     }
 
     private fun checkForAppUpdate() {
@@ -240,7 +242,13 @@ class MainActivity : AppCompatActivity() {
         closeAppCompletely()
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (::updateManager.isInitialized) updateManager.onActivityResult(requestCode)
+    }
+
     override fun onDestroy() {
+        if (::updateManager.isInitialized) updateManager.close()
         try {
             unregisterReceiver(downloadReceiver)
         } catch (_: Exception) {
