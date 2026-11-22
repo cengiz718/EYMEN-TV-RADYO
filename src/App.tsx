@@ -7,7 +7,11 @@ import {
   StreamStatusEvent,
 } from "./streamManager";
 
-const CATALOG_URLS = { tv: [], radio: [] };
+const CATALOG_URLS = {
+  // Repoda bulunan ana M3U listesinden TV ve radyo ayrı ayrı ayrıştırılır.
+  tv: ["https://raw.githubusercontent.com/cengiz718/EYMEN-TV-RADYO/main/public/playlist.m3u8"],
+  radio: ["https://raw.githubusercontent.com/cengiz718/EYMEN-TV-RADYO/main/public/playlist.m3u8"],
+};
 
 const FALLBACK_CATALOG: Record<MediaCategory, MediaItem[]> = {
   tv: [
