@@ -155,6 +155,25 @@ export default function App() {
     controllerRef.current?.stop();
   };
 
+  const handleExitOrClose = () => {
+    controllerRef.current?.stop();
+    setSelectedItem(null);
+    setStatus({
+      state: "stopped",
+      message: "Yayın durduruldu. Kanal veya radyo seçebilirsiniz.",
+    });
+
+    const androidBridge = (
+      window as unknown as {
+        AndroidBridge?: { exitApp?: () => void };
+      }
+    ).AndroidBridge;
+
+    if (androidBridge && typeof androidBridge.exitApp === "function") {
+      androidBridge.exitApp();
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const focusable = Array.from(
       document.querySelectorAll<HTMLElement>('[data-tv-focus="true"]')
@@ -326,7 +345,7 @@ export default function App() {
               fontWeight: 600,
               borderRadius: "8px",
               border: "none",
-              backgroundColor: "#dc2626",
+              backgroundColor: "#d97706",
               color: "#ffffff",
               cursor: "pointer",
             }}
@@ -349,6 +368,23 @@ export default function App() {
             }}
           >
             {darkTheme ? "Gündüz" : "Gece"}
+          </button>
+
+          <button
+            data-tv-focus="true"
+            onClick={handleExitOrClose}
+            style={{
+              padding: "10px 14px",
+              fontSize: "15px",
+              fontWeight: 600,
+              borderRadius: "8px",
+              border: "none",
+              backgroundColor: "#dc2626",
+              color: "#ffffff",
+              cursor: "pointer",
+            }}
+          >
+            Kapat / Çık
           </button>
         </div>
       </section>
