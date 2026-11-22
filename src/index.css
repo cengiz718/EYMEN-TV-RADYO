@@ -161,7 +161,12 @@ body {
 @media (orientation:landscape) and (max-height:800px){
  .eymen-shell{padding-bottom:82px!important}
  .eymen-player-card{margin-bottom:8px!important}
- .eymen-player-card video{height:calc(100vh - 150px)!important;max-height:none!important}
+ .eymen-player-card video{height:calc(100vh - 235px)!important;max-height:none!important}
+ .eymen-content{grid-template-columns:repeat(2,minmax(280px,1fr))!important;gap:10px!important}
+ .eymen-content>section{max-height:calc(100vh - 170px);overflow:auto}
+ .eymen-controls{flex-wrap:nowrap!important;gap:8px!important}
+ .eymen-controls>div{flex-wrap:nowrap!important}
+ .eymen-controls button{white-space:nowrap!important;padding:9px 11px!important}
  .eymen-controls{position:fixed!important;left:8px;right:8px;bottom:8px;z-index:1000;margin:0!important;padding:8px!important;border-radius:16px!important;background:rgba(15,23,42,.94)!important;box-shadow:0 18px 50px rgba(0,0,0,.55)!important;border:1px solid rgba(255,255,255,.14)!important}
  .eymen-controls input{flex:0 1 230px!important;min-width:160px}
 }
