@@ -16,8 +16,9 @@ import java.net.URL
 import java.util.concurrent.Executors
 
 /**
- * Checks the latest GitHub Release and presents a mandatory update gate when a newer APK exists.
- * Android still requires the user to approve installation in the system package installer.
+ * Checks the version manifest hosted with the app and installs the APK from the
+ * single "latest" GitHub Release. Android always requires user confirmation
+ * in its package installer; apps cannot silently update themselves.
  */
 class AppUpdateManager(private val activity: Activity) {
     private val worker = Executors.newSingleThreadExecutor()
@@ -26,57 +27,43 @@ class AppUpdateManager(private val activity: Activity) {
     fun checkForUpdate() {
         worker.execute {
             try {
-                val connection = (URL(RELEASE_API).openConnection() as HttpURLConnection).apply {
+                val connection = (URL("$VERSION_URL?t=${System.currentTimeMillis()}").openConnection() as HttpURLConnection).apply {
                     connectTimeout = 12000
                     readTimeout = 15000
                     requestMethod = "GET"
-                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("Accept", "application/json")
                     setRequestProperty("User-Agent", "EymenTV-Android-Updater")
-                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                    instanceFollowRedirects = true
                 }
                 val code = connection.responseCode
                 if (code !in 200..299) {
                     connection.disconnect()
-                    if (code == 404 || code == 401) activity.runOnUiThread {
-                        Toast.makeText(activity, "GitHub güncelleme servisine erişilemiyor. Depo özel veya sürüm erişimi kapalı olabilir.", Toast.LENGTH_LONG).show()
-                    }
                     return@execute
                 }
                 val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
                 connection.disconnect()
-                val tag = json.optString("tag_name").removePrefix("v")
-                val assetList = json.optJSONArray("assets") ?: return@execute
-                var apkUrl: String? = null
-                for (i in 0 until assetList.length()) {
-                    val asset = assetList.getJSONObject(i)
-                    if (asset.optString("name").endsWith(".apk", true)) {
-                        apkUrl = asset.optString("browser_download_url")
-                        break
+
+                val remoteCode = json.optInt("versionCode", 0)
+                val remoteName = json.optString("versionName", "").ifBlank { "Yeni sürüm" }
+                val apkUrl = json.optString("apkUrl", "")
+                val notes = json.optString("releaseNotes", "Yeni sürüm hazır.")
+                if (remoteCode <= BuildConfig.VERSION_CODE || apkUrl.isBlank()) return@execute
+
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        showMandatoryUpdate(remoteName, notes, apkUrl)
                     }
                 }
-                if (apkUrl.isNullOrBlank() || compareVersions(tag, BuildConfig.VERSION_NAME) <= 0) return@execute
-                activity.runOnUiThread { showMandatoryUpdate(tag, apkUrl) }
             } catch (_: Exception) {
-                // A network/API failure must not prevent the currently installed app from opening.
+                // A failed network check must never prevent the installed app from opening.
             }
         }
     }
 
-    private fun compareVersions(remote: String, local: String): Int {
-        val a = remote.split(".").map { it.toIntOrNull() ?: 0 }
-        val b = local.split(".").map { it.toIntOrNull() ?: 0 }
-        for (i in 0 until maxOf(a.size, b.size)) {
-            val diff = (a.getOrElse(i) { 0 }).compareTo(b.getOrElse(i) { 0 })
-            if (diff != 0) return diff
-        }
-        return 0
-    }
-
-    private fun showMandatoryUpdate(version: String, url: String) {
-        if (activity.isFinishing || activity.isDestroyed) return
+    private fun showMandatoryUpdate(version: String, notes: String, url: String) {
         AlertDialog.Builder(activity)
-            .setTitle("Zorunlu güncelleme")
-            .setMessage("EYMEN TV RADYO PRO $version sürümü hazır. Devam etmek için güncellemeyi indirip Android kurulum ekranında onaylayın.")
+            .setTitle("EYMEN TV RADYO güncellemesi")
+            .setMessage("Yeni sürüm $version hazır.\n\n$notes\n\nGüncellemeyi indirip Android kurulum ekranında onaylayın.")
             .setCancelable(false)
             .setPositiveButton("Güncelle") { _, _ -> download(url) }
             .show()
@@ -88,7 +75,7 @@ class AppUpdateManager(private val activity: Activity) {
             try {
                 val connection = (URL(url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000
-                    readTimeout = 30000
+                    readTimeout = 45000
                     instanceFollowRedirects = true
                     setRequestProperty("User-Agent", "EymenTV-Android-Updater")
                 }
@@ -97,7 +84,9 @@ class AppUpdateManager(private val activity: Activity) {
                     ?: throw IllegalStateException("İndirme klasörü kullanılamıyor")
                 if (!directory.exists()) directory.mkdirs()
                 val apk = File(directory, "eymen-tv-update.apk")
-                connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
+                connection.inputStream.use { input ->
+                    apk.outputStream().use { output -> input.copyTo(output) }
+                }
                 connection.disconnect()
                 if (apk.length() < 1024) throw IllegalStateException("İndirilen APK geçersiz")
                 pendingApk = apk
@@ -115,8 +104,10 @@ class AppUpdateManager(private val activity: Activity) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 !activity.packageManager.canRequestPackageInstalls()) {
                 pendingApk = apk
-                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${activity.packageName}"))
+                val settingsIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${activity.packageName}")
+                )
                 activity.startActivityForResult(settingsIntent, REQUEST_INSTALL_PERMISSION)
                 return
             }
@@ -133,10 +124,13 @@ class AppUpdateManager(private val activity: Activity) {
         }
     }
 
-    fun onActivityResult(requestCode: Int, resultCode: Int) {
+    fun onActivityResult(requestCode: Int) {
         if (requestCode == REQUEST_INSTALL_PERMISSION && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (activity.packageManager.canRequestPackageInstalls()) pendingApk?.let(::install)
-            else Toast.makeText(activity, "APK kurulum izni verilmedi.", Toast.LENGTH_LONG).show()
+            if (activity.packageManager.canRequestPackageInstalls()) {
+                pendingApk?.let(::install)
+            } else {
+                Toast.makeText(activity, "APK kurulum izni verilmedi.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -145,7 +139,8 @@ class AppUpdateManager(private val activity: Activity) {
     }
 
     companion object {
-        private const val RELEASE_API = "https://api.github.com/repos/cengiz718/EYMEN-TV-RADYO/releases/latest"
+        private const val VERSION_URL =
+            "https://raw.githubusercontent.com/cengiz718/EYMEN-TV-RADYO/main/public/version.json"
         private const val REQUEST_INSTALL_PERMISSION = 6712
     }
 }
