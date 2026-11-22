@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.view.KeyEvent
 import android.webkit.WebChromeClient
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -31,8 +32,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private val baseAppUrl = "https://cengiz718.github.io/EYMEN-TV-RADYO/"
-    private val versionJsonUrl = "https://cengiz718.github.io/EYMEN-TV-RADYO/version.json"
+    private val versionJsonUrl = "https://raw.githubusercontent.com/cengiz718/EYMEN-TV-RADYO/main/public/version.json"
     private var downloadId: Long = -1L
+    private var webViewDestroyed = false
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -76,6 +78,12 @@ class MainActivity : AppCompatActivity() {
             settings.userAgentString = settings.userAgentString.replace("; wv", "")
 
             webChromeClient = WebChromeClient()
+            addJavascriptInterface(object {
+                @JavascriptInterface
+                fun exitApp() {
+                    runOnUiThread { closeAppCompletely() }
+                }
+            }, "AndroidBridge")
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
@@ -186,12 +194,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun closeAppCompletely() {
-        try {
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.clearHistory()
-            webView.destroy()
-        } catch (_: Exception) { }
+        if (!webViewDestroyed) {
+            try {
+                webView.stopLoading()
+                webView.loadUrl("about:blank")
+                webView.clearHistory()
+                webView.removeAllViews()
+                webView.destroy()
+            } catch (_: Exception) {
+            } finally {
+                webViewDestroyed = true
+            }
+        }
         finishAndRemoveTask()
     }
 
@@ -204,7 +218,16 @@ class MainActivity : AppCompatActivity() {
             unregisterReceiver(downloadReceiver)
         } catch (_: Exception) {
         }
-        webView.destroy()
+        if (!webViewDestroyed && ::webView.isInitialized) {
+            try {
+                webView.stopLoading()
+                webView.removeAllViews()
+                webView.destroy()
+            } catch (_: Exception) {
+            } finally {
+                webViewDestroyed = true
+            }
+        }
         super.onDestroy()
     }
 }
