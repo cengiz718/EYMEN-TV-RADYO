@@ -125,16 +125,7 @@ export function App() {
     });
     controllerRef.current = controller;
 
-    loadAllCatalogs(
-      {
-        // Kendi JSON veya M3U liste adreslerinizi buraya ekleyebilirsiniz:
-        // tvM3uUrl: "https://iptv-org.github.io/iptv/countries/tr.m3u",
-        // radioJsonUrl: "",
-        // movieJsonUrl: "",
-        // seriesJsonUrl: "",
-      },
-      FALLBACK_CATALOG
-    ).then((loaded) => {
+    loadAllCatalogs({}, FALLBACK_CATALOG).then((loaded) => {
       setCatalogs(loaded);
     });
 
@@ -148,7 +139,11 @@ export function App() {
     setSelectedItem(item);
     setIsPlayerOpen(true);
     setStatusMessage(`${item.title} hazırlanıyor...`);
-    controllerRef.current?.playItem(item, 0);
+
+    // DOM görünürlüğü güncellendikten hemen sonra oynatmayı başlat
+    requestAnimationFrame(() => {
+      controllerRef.current?.playItem(item, 0);
+    });
   };
 
   const handleSwitchBackup = () => {
@@ -234,80 +229,78 @@ export function App() {
         ))}
       </main>
 
-      {isPlayerOpen && (
-        <section
-          aria-label="Medya Oynatıcı"
+      <section
+        aria-label="Medya Oynatıcı"
+        style={{
+          display: isPlayerOpen ? "flex" : "none",
+          position: "fixed",
+          inset: 0,
+          background: "#000",
+          flexDirection: "column",
+          justifyContent: "space-between",
+          zIndex: 50,
+        }}
+      >
+        <video
+          ref={videoRef}
+          controls
+          autoPlay
+          playsInline
+          style={{ width: "100%", height: "100%", maxHeight: "78vh" }}
+        />
+
+        <div
           style={{
-            position: "fixed",
-            inset: 0,
-            background: "#000",
             display: "flex",
-            flexDirection: "column",
+            flexWrap: "wrap",
+            alignItems: "center",
             justifyContent: "space-between",
-            zIndex: 50,
+            gap: "12px",
+            padding: "12px 18px",
+            background: "#141923",
           }}
         >
-          <video
-            ref={videoRef}
-            controls
-            autoPlay
-            playsInline
-            style={{ width: "100%", height: "100%", maxHeight: "78vh" }}
-          />
-
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "12px",
-              padding: "12px 18px",
-              background: "#141923",
-            }}
-          >
-            <div>
-              <div style={{ fontWeight: 700 }}>
-                {selectedItem?.title || "Yayın"}
-              </div>
-              <div style={{ fontSize: "13px", color: "#facc15" }}>
-                {statusMessage}
-              </div>
+          <div>
+            <div style={{ fontWeight: 700 }}>
+              {selectedItem?.title || "Yayın"}
             </div>
-
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                type="button"
-                onClick={handleSwitchBackup}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: "8px",
-                  border: "1px solid #3c4b69",
-                  background: "#1f293d",
-                  color: "#f3f6fc",
-                  cursor: "pointer",
-                }}
-              >
-                Yedek Kaynak Değiştir
-              </button>
-              <button
-                type="button"
-                onClick={handleClosePlayer}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: "8px",
-                  border: "1px solid #7f1d1d",
-                  background: "#450a0a",
-                  color: "#fecaca",
-                  cursor: "pointer",
-                }}
-              >
-                Kapat
-              </button>
+            <div style={{ fontSize: "13px", color: "#facc15" }}>
+              {statusMessage}
             </div>
           </div>
-        </section>
-      )}
+
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              type="button"
+              onClick={handleSwitchBackup}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                border: "1px solid #3c4b69",
+                background: "#1f293d",
+                color: "#f3f6fc",
+                cursor: "pointer",
+              }}
+            >
+              Yedek Kaynak Değiştir
+            </button>
+            <button
+              type="button"
+              onClick={handleClosePlayer}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                border: "1px solid #7f1d1d",
+                background: "#450a0a",
+                color: "#fecaca",
+                cursor: "pointer",
+              }}
+            >
+              Kapat
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
