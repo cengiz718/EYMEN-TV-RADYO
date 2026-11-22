@@ -7,507 +7,186 @@ import {
   StreamStatusEvent,
 } from "./streamManager";
 
-const CATALOG_URLS = {
-  tv: [
-    // M3U veya JSON liste URL'lerinizi buraya ekleyebilirsiniz
-  ],
-  radio: [
-    // Radyo M3U veya JSON liste URL'lerinizi buraya ekleyebilirsiniz
-  ],
-};
+const CATALOG_URLS = { tv: [], radio: [] };
 
 const FALLBACK_CATALOG: Record<MediaCategory, MediaItem[]> = {
   tv: [
-    {
-      id: "tv-1",
-      title: "TRT 1",
-      category: "tv",
-      group: "Ulusal",
-      sources: [
-        {
-          id: "tv-1-s1",
-          label: "Ana Yayın",
-          url: "https://tv-trt1.medya.trt.com.tr/master.m3u8",
-          priority: 1,
-        },
-      ],
-    },
-    {
-      id: "tv-2",
-      title: "TRT Haber",
-      category: "tv",
-      group: "Haber",
-      sources: [
-        {
-          id: "tv-2-s1",
-          label: "Ana Yayın",
-          url: "https://tv-trthaber.medya.trt.com.tr/master.m3u8",
-          priority: 1,
-        },
-      ],
-    },
-    {
-      id: "tv-3",
-      title: "TRT Spor",
-      category: "tv",
-      group: "Spor",
-      sources: [
-        {
-          id: "tv-3-s1",
-          label: "Ana Yayın",
-          url: "https://tv-trtspor.medya.trt.com.tr/master.m3u8",
-          priority: 1,
-        },
-      ],
-    },
+    { id: "tv-1", title: "TRT 1", category: "tv", group: "Ulusal", sources: [{ id: "tv-1-s1", label: "Ana Yayın", url: "https://tv-trt1.medya.trt.com.tr/master.m3u8", priority: 1 }] },
+    { id: "tv-2", title: "TRT Haber", category: "tv", group: "Haber", sources: [{ id: "tv-2-s1", label: "Ana Yayın", url: "https://tv-trthaber.medya.trt.com.tr/master.m3u8", priority: 1 }] },
+    { id: "tv-3", title: "TRT Spor", category: "tv", group: "Spor", sources: [{ id: "tv-3-s1", label: "Ana Yayın", url: "https://tv-trtspor.medya.trt.com.tr/master.m3u8", priority: 1 }] },
   ],
   radio: [
-    {
-      id: "radio-1",
-      title: "TRT Radyo 1",
-      category: "radio",
-      group: "Haber & Spor Radyo",
-      sources: [
-        {
-          id: "radio-1-s1",
-          label: "Ana Yayın",
-          url: "https://radio-trtradyo1.medya.trt.com.tr/master.m3u8",
-          priority: 1,
-        },
-      ],
-    },
-    {
-      id: "radio-2",
-      title: "TRT Türkü",
-      category: "radio",
-      group: "Türkü & Halk Müziği",
-      sources: [
-        {
-          id: "radio-2-s1",
-          label: "Ana Yayın",
-          url: "https://radio-trtturku.medya.trt.com.tr/master.m3u8",
-          priority: 1,
-        },
-      ],
-    },
+    { id: "radio-1", title: "TRT Radyo 1", category: "radio", group: "Haber & Spor", sources: [{ id: "radio-1-s1", label: "Ana Yayın", url: "https://radio-trtradyo1.medya.trt.com.tr/master.m3u8", priority: 1 }] },
+    { id: "radio-2", title: "TRT Türkü", category: "radio", group: "Türkü & Halk Müziği", sources: [{ id: "radio-2-s1", label: "Ana Yayın", url: "https://radio-trtturku.medya.trt.com.tr/master.m3u8", priority: 1 }] },
   ],
   movie: [],
   series: [],
 };
 
-function groupItemsByCategory(items: MediaItem[]): Array<[string, MediaItem[]]> {
+function groupItems(items: MediaItem[]): Array<[string, MediaItem[]]> {
   const map = new Map<string, MediaItem[]>();
-  for (const item of items) {
-    const grp = item.group?.trim() || "Genel";
-    if (!map.has(grp)) {
-      map.set(grp, []);
-    }
-    map.get(grp)!.push(item);
-  }
+  items.forEach((item) => {
+    const group = item.group?.trim() || "Genel";
+    if (!map.has(group)) map.set(group, []);
+    map.get(group)!.push(item);
+  });
   return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0], "tr"));
 }
 
 export default function App() {
   const mediaRef = useRef<HTMLVideoElement | null>(null);
   const controllerRef = useRef<EymenStreamController | null>(null);
-
   const [tvList, setTvList] = useState<MediaItem[]>(FALLBACK_CATALOG.tv);
   const [radioList, setRadioList] = useState<MediaItem[]>(FALLBACK_CATALOG.radio);
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
-  const [status, setStatus] = useState<StreamStatusEvent>({
-    state: "idle",
-    message: "Aşağıdaki menüden bir TV kanalı veya Radyo seçin",
-  });
+  const [status, setStatus] = useState<StreamStatusEvent>({ state: "idle", message: "Bir yayın seçerek başlayın" });
   const [searchQuery, setSearchQuery] = useState("");
   const [darkTheme, setDarkTheme] = useState(true);
-  const [activeRightTab, setActiveRightTab] = useState<"tv" | "radio">("tv");
+  const [activeTab, setActiveTab] = useState<"tv" | "radio">("tv");
 
   useEffect(() => {
     const el = mediaRef.current;
     if (!el) return;
-
-    const controller = new EymenStreamController(el, {
-      failoverTimeoutMs: 5000,
-      onStatus: (ev) => setStatus(ev),
-    });
+    const controller = new EymenStreamController(el, { failoverTimeoutMs: 5000, onStatus: setStatus });
     controllerRef.current = controller;
-
     void loadAllCatalogs(CATALOG_URLS, FALLBACK_CATALOG).then((catalog) => {
-      if (catalog.tv.length > 0) setTvList(catalog.tv);
-      if (catalog.radio.length > 0) setRadioList(catalog.radio);
+      if (catalog.tv.length) setTvList(catalog.tv);
+      if (catalog.radio.length) setRadioList(catalog.radio);
     });
-
     return () => {
       controller.destroy();
       controllerRef.current = null;
     };
   }, []);
 
-  const handleSelectItem = (item: MediaItem) => {
+  const selectItem = (item: MediaItem) => {
     setSelectedItem(item);
     controllerRef.current?.playItem(item, 0);
   };
 
-  const handleManualFailover = () => {
-    controllerRef.current?.cycleSourceManual();
-  };
+  const stop = () => controllerRef.current?.stop();
 
-  const handleStop = () => {
+  const exitApp = () => {
     controllerRef.current?.stop();
-  };
-
-  const handleExitOrClose = () => {
-    controllerRef.current?.stop();
-    setSelectedItem(null);
-    setStatus({
-      state: "stopped",
-      message: "Yayın durduruldu. Kanal veya radyo seçebilirsiniz.",
-    });
-
-    const androidBridge = (
-      window as unknown as {
-        AndroidBridge?: { exitApp?: () => void };
-      }
-    ).AndroidBridge;
-
-    if (androidBridge && typeof androidBridge.exitApp === "function") {
-      androidBridge.exitApp();
-    }
+    const bridge = (window as unknown as { AndroidBridge?: { exitApp?: () => void } }).AndroidBridge;
+    bridge?.exitApp?.();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const focusable = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-tv-focus="true"]')
-    );
-    const currentIdx = focusable.indexOf(document.activeElement as HTMLElement);
-    if (currentIdx === -1 || focusable.length === 0) return;
-
-    if (e.key === "ArrowDown") {
+    const elements = Array.from(document.querySelectorAll<HTMLElement>("[data-tv-focus='true']"));
+    const index = elements.indexOf(document.activeElement as HTMLElement);
+    if (index < 0) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
       e.preventDefault();
-      focusable[(currentIdx + 1) % focusable.length]?.focus();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      focusable[(currentIdx - 1 + focusable.length) % focusable.length]?.focus();
+      elements[(index + 1) % elements.length]?.focus();
     }
+    if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      elements[(index - 1 + elements.length) % elements.length]?.focus();
+    }
+    if (e.key === "Enter" && document.activeElement instanceof HTMLElement) document.activeElement.click();
   };
 
-  const q = searchQuery.trim().toLowerCase();
-
-  const tvGroups = useMemo(() => {
-    const filtered = q
-      ? tvList.filter(
-          (c) =>
-            c.title.toLowerCase().includes(q) ||
-            (c.group || "").toLowerCase().includes(q)
-        )
-      : tvList;
-    return groupItemsByCategory(filtered);
-  }, [tvList, q]);
-
-  const radioGroups = useMemo(() => {
-    const filtered = q
-      ? radioList.filter(
-          (c) =>
-            c.title.toLowerCase().includes(q) ||
-            (c.group || "").toLowerCase().includes(q)
-        )
-      : radioList;
-    return groupItemsByCategory(filtered);
-  }, [radioList, q]);
-
-  const pageBg = darkTheme ? "#0b1017" : "#eef2f6";
-  const pageFg = darkTheme ? "#f8fafc" : "#0f172a";
-  const panelBg = darkTheme ? "#151d29" : "#ffffff";
-  const itemBg = darkTheme ? "#1e293b" : "#f1f5f9";
-  const btnBg = darkTheme ? "#2563eb" : "#1d4ed8";
+  const q = searchQuery.trim().toLocaleLowerCase("tr");
+  const filteredTv = q ? tvList.filter((x) => x.title.toLocaleLowerCase("tr").includes(q) || (x.group || "").toLocaleLowerCase("tr").includes(q)) : tvList;
+  const filteredRadio = q ? radioList.filter((x) => x.title.toLocaleLowerCase("tr").includes(q) || (x.group || "").toLocaleLowerCase("tr").includes(q)) : radioList;
+  const groups = groupItems(activeTab === "tv" ? filteredTv : filteredRadio);
+  const total = tvList.length + radioList.length;
+  const isPlaying = status.state === "playing" || status.state === "loading";
 
   return (
-    <div
-      className="eymen-shell"
-      onKeyDown={handleKeyDown}
-      style={{
-        minHeight: "100vh",
-        backgroundColor: pageBg,
-        color: pageFg,
-        padding: "12px",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        fontSize: "15px",
-        lineHeight: 1.45,
-      }}
-    >
-      {/* 1. EN ÜST: Geniş Video Oynatıcı Alanı */}
-      <section
-        className="eymen-player-card"
-        style={{
-          backgroundColor: panelBg,
-          borderRadius: "12px",
-          padding: "10px",
-          marginBottom: "12px",
-          border: "1px solid rgba(148, 163, 184, 0.25)",
-        }}
-      >
-        <video
-          ref={mediaRef}
-          controls
-          playsInline
-          autoPlay
-          style={{
-            width: "100%",
-            height: "54vh",
-            maxHeight: "520px",
-            borderRadius: "8px",
-            backgroundColor: "#000000",
-            display: "block",
-          }}
-        />
+    <div className={`eymen-shell ${darkTheme ? "theme-dark" : "theme-light"}`} onKeyDown={handleKeyDown}>
+      <header className="eymen-header">
+        <div className="eymen-brand">
+          <div className="eymen-logo" aria-hidden="true"><span>ET</span></div>
+          <div>
+            <div className="eymen-brand-title">EYMEN <strong>TV</strong></div>
+            <div className="eymen-brand-subtitle">TELEVİZYON • RADYO • CANLI YAYIN</div>
+          </div>
+        </div>
+        <div className="eymen-header-actions">
+          <div className={`eymen-live-indicator ${isPlaying ? "is-live" : ""}`}><span /> {isPlaying ? "CANLI" : "HAZIR"}</div>
+          <button data-tv-focus="true" className="icon-button" onClick={() => setDarkTheme((v) => !v)} aria-label="Tema değiştir">{darkTheme ? "☀️" : "🌙"}</button>
+          <button data-tv-focus="true" className="exit-button" onClick={exitApp}>⏻ ÇIKIŞ</button>
+        </div>
+      </header>
 
-        <div
-          style={{
-            marginTop: "8px",
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "8px",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div style={{ fontSize: "16px", fontWeight: 700, color: pageFg }}>
-            {selectedItem ? selectedItem.title : "EYMEN TV & RADYO"}
-          </div>
-          <div
-            style={{
-              fontSize: "14px",
-              color: darkTheme ? "#cbd5e1" : "#334155",
-            }}
-          >
-            {status.message}
-          </div>
+      <section className="eymen-hero">
+        <div className="eymen-player-wrap">
+          <video ref={mediaRef} controls playsInline autoPlay className="eymen-player" />
+          <div className="eymen-player-badge"><span className="pulse-dot" /> {isPlaying ? "YAYIN AKIYOR" : "YAYIN BEKLENİYOR"}</div>
+          {selectedItem && <div className="eymen-now-playing"><div className="now-icon">{selectedItem.category === "radio" ? "🎵" : "📺"}</div><div><span>ŞU ANDA OYNATILIYOR</span><strong>{selectedItem.title}</strong></div></div>}
+        </div>
+        <div className="eymen-player-footer">
+          <div><span className="eymen-kicker">EYMEN PLAYER</span><h1>{selectedItem?.title || "Canlı yayın merkezi"}</h1><p>{status.message}</p></div>
+          <div className="eymen-status-box"><span className={`status-dot status-${status.state}`} /><span>{status.state === "playing" ? "Bağlantı aktif" : status.state === "loading" ? "Bağlanıyor…" : "Yayın seçilmedi"}</span></div>
         </div>
       </section>
 
-      {/* 2. ORTA: Oynatıcının Altında Kontrol & Arama Menüsü */}
-      <section
-        className="eymen-controls"
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "10px",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "14px",
-          backgroundColor: panelBg,
-          padding: "12px",
-          borderRadius: "12px",
-          border: "1px solid rgba(148, 163, 184, 0.25)",
-        }}
-      >
-        <input
-          data-tv-focus="true"
-          type="search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="TV kanalı veya radyo ara..."
-          style={{
-            padding: "10px 14px",
-            fontSize: "15px",
-            borderRadius: "8px",
-            border: "1px solid #64748b",
-            backgroundColor: darkTheme ? "#0f172a" : "#ffffff",
-            color: pageFg,
-            flex: "1 1 220px",
-          }}
-        />
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <button
-            data-tv-focus="true"
-            onClick={handleManualFailover}
-            disabled={!selectedItem || selectedItem.sources.length <= 1}
-            style={{
-              padding: "10px 14px",
-              fontSize: "15px",
-              fontWeight: 600,
-              borderRadius: "8px",
-              border: "none",
-              backgroundColor:
-                !selectedItem || selectedItem.sources.length <= 1
-                  ? "#475569"
-                  : "#16a34a",
-              color: "#ffffff",
-              cursor: "pointer",
-            }}
-          >
-            Yedek Kaynak ({selectedItem?.sources.length ?? 0})
-          </button>
-
-          <button
-            data-tv-focus="true"
-            onClick={handleStop}
-            style={{
-              padding: "10px 14px",
-              fontSize: "15px",
-              fontWeight: 600,
-              borderRadius: "8px",
-              border: "none",
-              backgroundColor: "#d97706",
-              color: "#ffffff",
-              cursor: "pointer",
-            }}
-          >
-            Durdur
-          </button>
-
-          <button
-            data-tv-focus="true"
-            onClick={() => setDarkTheme((d) => !d)}
-            style={{
-              padding: "10px 14px",
-              fontSize: "15px",
-              fontWeight: 600,
-              borderRadius: "8px",
-              border: "none",
-              backgroundColor: btnBg,
-              color: "#ffffff",
-              cursor: "pointer",
-            }}
-          >
-            {darkTheme ? "Gündüz" : "Gece"}
-          </button>
-
-          <button
-            data-tv-focus="true"
-            onClick={handleExitOrClose}
-            style={{
-              padding: "10px 14px",
-              fontSize: "15px",
-              fontWeight: 600,
-              borderRadius: "8px",
-              border: "none",
-              backgroundColor: "#dc2626",
-              color: "#ffffff",
-              cursor: "pointer",
-            }}
-          >
-            Kapat / Çık
-          </button>
+      <section className="eymen-toolbar">
+        <div className="search-box">
+          <span>⌕</span>
+          <input data-tv-focus="true" type="search" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Kanal veya radyo ara..." />
+          {searchQuery && <button data-tv-focus="true" className="clear-search" onClick={() => setSearchQuery("")}>×</button>}
+        </div>
+        <div className="toolbar-actions">
+          <button data-tv-focus="true" className="tool-button secondary" onClick={() => controllerRef.current?.cycleSourceManual()} disabled={!selectedItem || selectedItem.sources.length < 2}>↻ Yedek kaynak</button>
+          <button data-tv-focus="true" className="tool-button warning" onClick={stop}>■ Durdur</button>
+          <button data-tv-focus="true" className="tool-button" onClick={() => setDarkTheme((v) => !v)}>{darkTheme ? "☀️ Açık tema" : "🌙 Koyu tema"}</button>
         </div>
       </section>
 
-      {/* 3. AYRILMIŞ ALANLAR: Film/Dizi solda, TV/Radyo sağda */}
-      <main className="eymen-content eymen-main-layout">
-        <section className="eymen-library-panel" style={{
-          backgroundColor: panelBg,
-          borderRadius: "16px",
-          padding: "16px",
-          border: "1px solid rgba(148, 163, 184, 0.25)",
-          minWidth: 0,
-        }}>
-          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}}>
-            <div aria-hidden="true" style={{fontSize:"26px"}}>🎬</div>
-            <div>
-              <h2 style={{margin:0,fontSize:"19px",fontWeight:800,color:pageFg}}>FİLM & DİZİ</h2>
-              <div style={{fontSize:"12px",color:darkTheme?"#94a3b8":"#64748b"}}>Sol bölüm · Film ve dizi arşivi</div>
-            </div>
+      <main className="eymen-main-layout">
+        <section className="eymen-library-panel">
+          <div className="panel-heading">
+            <div className="panel-icon movie-icon">▶</div>
+            <div><span className="eymen-kicker">ARŞİV</span><h2>FİLM & DİZİ</h2><p>İçerik bölümü</p></div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:"10px",marginBottom:"16px"}}>
-            <div style={{background:itemBg,border:"1px solid rgba(148,163,184,.22)",borderRadius:"12px",padding:"14px",minHeight:"92px"}}>
-              <div style={{fontSize:"23px",marginBottom:"5px"}}>🎞️</div>
-              <div style={{fontWeight:800,color:pageFg}}>Filmler</div>
-              <div style={{fontSize:"11px",color:darkTheme?"#94a3b8":"#64748b"}}>Yayın listesi boş</div>
-            </div>
-            <div style={{background:itemBg,border:"1px solid rgba(148,163,184,.22)",borderRadius:"12px",padding:"14px",minHeight:"92px"}}>
-              <div style={{fontSize:"23px",marginBottom:"5px"}}>📺</div>
-              <div style={{fontWeight:800,color:pageFg}}>Diziler</div>
-              <div style={{fontSize:"11px",color:darkTheme?"#94a3b8":"#64748b"}}>Yayın listesi boş</div>
-            </div>
+          <div className="archive-cards">
+            <div className="archive-card"><span>🎬</span><strong>Filmler</strong><small>0 içerik</small></div>
+            <div className="archive-card"><span>📺</span><strong>Diziler</strong><small>0 içerik</small></div>
           </div>
-          <div style={{
-            border:"1px dashed rgba(148,163,184,.38)",
-            borderRadius:"12px",
-            padding:"18px 14px",
-            textAlign:"center",
-            background:darkTheme?"rgba(15,23,42,.55)":"rgba(241,245,249,.75)",
-          }}>
-            <div style={{fontSize:"28px",marginBottom:"8px"}}>🧹</div>
-            <div style={{fontWeight:750,color:pageFg,marginBottom:"5px"}}>Film ve dizi yayın bağlantıları kaldırıldı</div>
-            <div style={{fontSize:"12px",lineHeight:1.55,color:darkTheme?"#cbd5e1":"#475569"}}>
-              Beğenmediğin film/dizi yayınları bu ekranda gösterilmiyor. Doğrulanmış yeni bir liste eklenene kadar bu bölüm boş kalacak.
-            </div>
-          </div>
+          <div className="archive-empty"><div className="empty-symbol">✦</div><strong>İçerik bağlantıları temizlendi</strong><p>Film ve dizi yayın linkleri bu sürümden kaldırıldı. Doğrulanmış içerik eklenene kadar bu alan pasif kalır.</p></div>
+          <div className="panel-note">Güvenli içerik yönetimi <span>•</span> Hazır</div>
         </section>
 
-        <section className="eymen-live-panel" style={{
-          backgroundColor: panelBg,
-          borderRadius: "16px",
-          padding: "14px",
-          border: "1px solid rgba(148, 163, 184, 0.25)",
-          minWidth: 0,
-        }}>
-          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
-            <div aria-hidden="true" style={{fontSize:"26px"}}>📡</div>
-            <div>
-              <h2 style={{margin:0,fontSize:"19px",fontWeight:800,color:pageFg}}>TV & RADYO</h2>
-              <div style={{fontSize:"12px",color:darkTheme?"#94a3b8":"#64748b"}}>Sağ bölüm · Canlı yayınlar</div>
-            </div>
+        <section className="eymen-live-panel">
+          <div className="panel-heading live-heading">
+            <div className="panel-icon live-icon">◉</div>
+            <div><span className="eymen-kicker">CANLI YAYIN</span><h2>TV & RADYO</h2><p>{total} yayın noktası</p></div>
+            <div className="count-badge">{activeTab === "tv" ? tvList.length : radioList.length}</div>
           </div>
 
-          <div role="tablist" aria-label="Canlı yayın türü" style={{
-            display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",
-            padding:"5px",borderRadius:"12px",background:darkTheme?"#0f172a":"#e2e8f0",
-            marginBottom:"14px",
-          }}>
-            <button type="button" role="tab" aria-selected={activeRightTab==="tv"}
-              data-tv-focus="true" onClick={()=>setActiveRightTab("tv")}
-              style={{padding:"11px 8px",border:0,borderRadius:"9px",fontWeight:800,
-                background:activeRightTab==="tv"?"#2563eb":"transparent",
-                color:activeRightTab==="tv"?"#fff":pageFg,cursor:"pointer"}}>
-              📺 TELEVİZYON ({tvGroups.reduce((n,[,items])=>n+items.length,0)})
-            </button>
-            <button type="button" role="tab" aria-selected={activeRightTab==="radio"}
-              data-tv-focus="true" onClick={()=>setActiveRightTab("radio")}
-              style={{padding:"11px 8px",border:0,borderRadius:"9px",fontWeight:800,
-                background:activeRightTab==="radio"?"#047857":"transparent",
-                color:activeRightTab==="radio"?"#fff":pageFg,cursor:"pointer"}}>
-              🎵 RADYO ({radioGroups.reduce((n,[,items])=>n+items.length,0)})
-            </button>
+          <div className="media-tabs" role="tablist">
+            <button data-tv-focus="true" className={`media-tab tv-tab ${activeTab === "tv" ? "active" : ""}`} role="tab" aria-selected={activeTab === "tv"} onClick={() => setActiveTab("tv")}><span>📺</span><b>TELEVİZYON</b><em>{tvList.length}</em></button>
+            <button data-tv-focus="true" className={`media-tab radio-tab ${activeTab === "radio" ? "active" : ""}`} role="tab" aria-selected={activeTab === "radio"} onClick={() => setActiveTab("radio")}><span>🎵</span><b>RADYO</b><em>{radioList.length}</em></button>
           </div>
 
-          {(() => {
-            const groups = activeRightTab === "tv" ? tvGroups : radioGroups;
-            const accent = activeRightTab === "tv" ? (darkTheme?"#93c5fd":"#1d4ed8") : (darkTheme?"#6ee7b7":"#047857");
-            return groups.length === 0 ? (
-              <div style={{padding:"14px",color:darkTheme?"#cbd5e1":"#334155"}}>
-                {activeRightTab === "tv" ? "Gösterilecek TV yayını bulunamadı." : "Gösterilecek radyo yayını bulunamadı."}
-              </div>
-            ) : (
-              <div style={{display:"flex",flexDirection:"column",gap:"14px"}}>
-                {groups.map(([groupName,items])=>(
-                  <div key={groupName}>
-                    <div style={{fontSize:"13px",fontWeight:800,color:accent,marginBottom:"7px",
-                      paddingBottom:"5px",borderBottom:"1px solid rgba(148,163,184,.2)"}}>
-                      {groupName} ({items.length})
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:"7px"}}>
-                      {items.map(item=>{
-                        const active=selectedItem?.id===item.id;
-                        return <button key={item.id} type="button" data-tv-focus="true"
-                          onClick={()=>handleSelectItem(item)}
-                          style={{textAlign:"left",padding:"11px 12px",minHeight:"44px",
-                            fontSize:"14px",fontWeight:active?800:600,borderRadius:"10px",
-                            cursor:"pointer",border:active?"2px solid #60a5fa":"1px solid #475569",
-                            backgroundColor:active?(activeRightTab==="tv"?"#1d4ed8":"#047857"):itemBg,
-                            color:active?"#fff":pageFg}}>
-                          {item.title}{item.sources.length>1? ` · ${item.sources.length} kaynak`:""}
-                        </button>;
-                      })}
-                    </div>
+          <div className="channel-area">
+            {groups.length === 0 ? <div className="no-results"><span>⌕</span><strong>Sonuç bulunamadı</strong><p>Arama metnini değiştirip tekrar deneyin.</p></div> :
+              groups.map(([groupName, items]) => (
+                <div className="channel-group" key={groupName}>
+                  <div className="group-title"><span>{groupName}</span><em>{items.length}</em></div>
+                  <div className="channel-grid">
+                    {items.map((item) => {
+                      const active = selectedItem?.id === item.id;
+                      return <button key={item.id} data-tv-focus="true" className={`channel-card ${active ? "selected" : ""}`} onClick={() => selectItem(item)}>
+                        <span className="channel-logo">{item.category === "radio" ? "♪" : "TV"}</span>
+                        <span className="channel-name">{item.title}</span>
+                        {active && <span className="playing-mark"><i /><i /><i /></span>}
+                      </button>;
+                    })}
                   </div>
-                ))}
-              </div>
-            );
-          })()}
+                </div>
+              ))
+            }
+          </div>
         </section>
       </main>
+
+      <footer className="eymen-footer">
+        <span>EYMEN TV & RADYO</span><span>Profesyonel canlı yayın arayüzü</span><span>TV: {tvList.length} • Radyo: {radioList.length}</span>
+      </footer>
     </div>
   );
 }
