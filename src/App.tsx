@@ -167,8 +167,8 @@ const CATEGORY_LABELS: Record<MediaCategory, string> = {
 const THEME = {
   night: {
     bg: "#090d16",
-    surface: "rgba(18, 25, 40, 0.9)",
-    card: "rgba(26, 36, 56, 0.85)",
+    surface: "rgba(18, 25, 40, 0.92)",
+    card: "rgba(26, 36, 56, 0.88)",
     cardFocus: "rgba(42, 58, 90, 0.98)",
     text: "#f8fafc",
     muted: "#cbd5e1",
@@ -178,8 +178,8 @@ const THEME = {
   },
   day: {
     bg: "#e2e8f0",
-    surface: "rgba(255, 255, 255, 0.92)",
-    card: "rgba(255, 255, 255, 0.88)",
+    surface: "rgba(255, 255, 255, 0.94)",
+    card: "rgba(255, 255, 255, 0.9)",
     cardFocus: "rgba(224, 242, 254, 0.98)",
     text: "#0f172a",
     muted: "#334155",
@@ -216,8 +216,10 @@ function BrandLogo({ accent }: { accent: string }) {
   );
 }
 
+type FocusColumn = "tv" | "radio" | "extra";
+
 type FocusTarget = {
-  column: "tv" | "radio";
+  column: FocusColumn;
   index: number;
 };
 
@@ -226,6 +228,7 @@ export function App() {
   const controllerRef = useRef<EymenStreamController | null>(null);
   const tvCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const radioCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const extraCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const backupBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [activeCategory, setActiveCategory] = useState<MediaCategory>("tv");
@@ -249,9 +252,21 @@ export function App() {
   const theme = THEME[themeMode];
   const isNight = themeMode === "night";
 
+  const tvItems = catalogs.tv || [];
+  const radioItems = catalogs.radio || [];
+  const extraItems =
+    activeCategory === "movie" || activeCategory === "series"
+      ? catalogs[activeCategory] || []
+      : [];
+
+  const getPoolForColumn = (column: FocusColumn): Array<HTMLButtonElement | null> => {
+    if (column === "tv") return tvCardRefs.current;
+    if (column === "radio") return radioCardRefs.current;
+    return extraCardRefs.current;
+  };
+
   const focusElement = (target: FocusTarget) => {
-    const pool =
-      target.column === "tv" ? tvCardRefs.current : radioCardRefs.current;
+    const pool = getPoolForColumn(target.column);
     const clampedIdx = Math.max(0, Math.min(target.index, pool.length - 1));
     const el = pool[clampedIdx];
     if (el) {
@@ -272,9 +287,13 @@ export function App() {
     });
     controllerRef.current = controller;
 
-    loadAllCatalogs({}, FALLBACK_CATALOG).then((loaded) => {
-      setCatalogs(loaded);
-    });
+    loadAllCatalogs({}, FALLBACK_CATALOG)
+      .then((loaded) => {
+        setCatalogs(loaded);
+      })
+      .catch(() => {
+        setCatalogs(FALLBACK_CATALOG);
+      });
 
     return () => {
       controller.stop();
@@ -282,13 +301,14 @@ export function App() {
     };
   }, []);
 
-  // İlk açılışta ve sekme değiştiğinde odağı güvenli kartta tut
   useEffect(() => {
     if (isPlayerOpen) return;
     const initial: FocusTarget =
       activeCategory === "radio"
         ? { column: "radio", index: 0 }
-        : { column: "tv", index: 0 };
+        : activeCategory === "movie" || activeCategory === "series"
+          ? { column: "extra", index: 0 }
+          : { column: "tv", index: 0 };
     setFocusTarget(initial);
     const timer = window.setTimeout(() => {
       focusElement(initial);
@@ -296,9 +316,32 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [activeCategory, catalogs, isPlayerOpen]);
 
+  const handleClosePlayer = () => {
+    controllerRef.current?.stop();
+    setIsPlayerOpen(false);
+    setStatusMessage("Oynatıcı kapatıldı");
+
+    window.setTimeout(() => {
+      setFocusTarget(lastPlayedTarget);
+      focusElement(lastPlayedTarget);
+    }, 50);
+  };
+
+  useEffect(() => {
+    if (!isPlayerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleClosePlayer();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   const handleSelectItem = (
     item: MediaItem,
-    column: "tv" | "radio",
+    column: FocusColumn,
     index: number
   ) => {
     const currentTarget = { column, index };
@@ -319,25 +362,14 @@ export function App() {
     backupBtnRef.current?.focus();
   };
 
-  const handleClosePlayer = () => {
-    controllerRef.current?.stop();
-    setIsPlayerOpen(false);
-    setStatusMessage("Oynatıcı kapatıldı");
-
-    window.setTimeout(() => {
-      setFocusTarget(lastPlayedTarget);
-      focusElement(lastPlayedTarget);
-    }, 50);
-  };
-
-  // Sol (TV) ve Sağ (Radyo) sütunlar arasında D-Pad gezinmesi
   const handleColumnKeyDown = (
-    e: React.KeyboardEvent<HTMLDivElement>,
-    column: "tv" | "radio",
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    column: FocusColumn,
     index: number
   ) => {
-    const tvLen = (catalogs.tv || []).length;
-    const radioLen = (catalogs.radio || []).length;
+    const tvLen = tvItems.length;
+    const radioLen = radioItems.length;
+    const extraLen = extraItems.length;
 
     let next: FocusTarget | null = null;
 
@@ -346,6 +378,8 @@ export function App() {
         next = { column: "tv", index: index + 1 };
       } else if (column === "radio" && index + 1 < radioLen) {
         next = { column: "radio", index: index + 1 };
+      } else if (column === "extra" && index + 1 < extraLen) {
+        next = { column: "extra", index: index + 1 };
       }
     } else if (e.key === "ArrowUp") {
       if (index - 1 >= 0) {
@@ -354,10 +388,14 @@ export function App() {
     } else if (e.key === "ArrowRight") {
       if (column === "tv" && radioLen > 0) {
         next = { column: "radio", index: Math.min(index, radioLen - 1) };
+      } else if (column === "extra" && index + 1 < extraLen) {
+        next = { column: "extra", index: index + 1 };
       }
     } else if (e.key === "ArrowLeft") {
       if (column === "radio" && tvLen > 0) {
         next = { column: "tv", index: Math.min(index, tvLen - 1) };
+      } else if (column === "extra" && index - 1 >= 0) {
+        next = { column: "extra", index: index - 1 };
       }
     }
 
@@ -369,28 +407,53 @@ export function App() {
     }
   };
 
-  const tvItems = catalogs.tv || [];
-  const radioItems = catalogs.radio || [];
-  const extraItems =
-    activeCategory === "movie" || activeCategory === "series"
-      ? catalogs[activeCategory] || []
-      : [];
+  const cardTextStyle: React.CSSProperties = {
+    fontSize: "16px",
+    fontWeight: 800,
+    lineHeight: 1.35,
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
+  };
+
+  const metaTextStyle: React.CSSProperties = {
+    fontSize: "13px",
+    color: theme.muted,
+    fontWeight: 600,
+    lineHeight: 1.3,
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
+  };
 
   return (
     <div
       style={{
         minHeight: "100vh",
+        width: "100%",
+        maxWidth: "100vw",
+        overflowX: "hidden",
         backgroundColor: theme.bg,
         color: theme.text,
         display: "flex",
         flexDirection: "column",
+        boxSizing: "border-box",
       }}
     >
       <style>{`
+        *, *::before, *::after {
+          box-sizing: border-box;
+        }
         button:focus,
         button:focus-visible {
           outline: 4px solid ${theme.focus} !important;
           outline-offset: 2px !important;
+        }
+        @media (max-width: 640px) {
+          .eymen-columns-grid {
+            grid-template-columns: 1fr !important;
+            padding: 12px !important;
+            gap: 14px !important;
+          }
         }
       `}</style>
 
@@ -401,7 +464,7 @@ export function App() {
           alignItems: "center",
           justifyContent: "space-between",
           gap: "12px",
-          padding: "14px 20px",
+          padding: "14px 18px",
           backgroundColor: theme.surface,
           borderBottom: `1px solid ${theme.border}`,
           position: "sticky",
@@ -409,10 +472,10 @@ export function App() {
           zIndex: 30,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
           <BrandLogo accent={theme.accent} />
-          <div>
-            <div style={{ fontSize: "20px", fontWeight: 900, letterSpacing: "0.5px" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: "20px", fontWeight: 900, letterSpacing: "0.5px", overflowWrap: "anywhere" }}>
               EYMEN TV RADYO PRO
             </div>
             <div style={{ fontSize: "12px", color: theme.muted, fontWeight: 600 }}>
@@ -430,7 +493,7 @@ export function App() {
                 type="button"
                 onClick={() => setActiveCategory(cat)}
                 style={{
-                  padding: "10px 18px",
+                  padding: "10px 16px",
                   borderRadius: "10px",
                   border: `1px solid ${isActive ? theme.accent : theme.border}`,
                   backgroundColor: isActive ? theme.accent : theme.card,
@@ -438,6 +501,7 @@ export function App() {
                   fontWeight: 800,
                   fontSize: "15px",
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {CATEGORY_LABELS[cat]}
@@ -458,6 +522,7 @@ export function App() {
             fontWeight: 700,
             fontSize: "14px",
             cursor: "pointer",
+            whiteSpace: "nowrap",
           }}
         >
           {isNight ? "☀️ Gündüz Modu" : "🌙 Gece Modu"}
@@ -465,12 +530,14 @@ export function App() {
       </header>
 
       <main
+        className="eymen-columns-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
           gap: "20px",
           padding: "20px",
           flex: 1,
+          minWidth: 0,
         }}
       >
         {/* Sol Taraf: TV Listesi */}
@@ -480,6 +547,7 @@ export function App() {
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
+            minWidth: 0,
           }}
         >
           <h2
@@ -488,6 +556,7 @@ export function App() {
               fontSize: "18px",
               fontWeight: 900,
               color: theme.accent,
+              overflowWrap: "anywhere",
             }}
           >
             📺 TV Kanalları (Sol)
@@ -529,18 +598,12 @@ export function App() {
                     color: theme.text,
                     textAlign: "left",
                     cursor: "pointer",
+                    width: "100%",
+                    minWidth: 0,
                   }}
                 >
-                  <strong style={{ fontSize: "16px", fontWeight: 800 }}>
-                    {item.title}
-                  </strong>
-                  <span
-                    style={{
-                      fontSize: "13px",
-                      color: theme.muted,
-                      fontWeight: 600,
-                    }}
-                  >
+                  <strong style={cardTextStyle}>{item.title}</strong>
+                  <span style={metaTextStyle}>
                     {item.group || "TV"} • {item.sources.length} kaynak
                   </span>
                 </button>
@@ -556,6 +619,7 @@ export function App() {
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
+            minWidth: 0,
           }}
         >
           <h2
@@ -564,6 +628,7 @@ export function App() {
               fontSize: "18px",
               fontWeight: 900,
               color: theme.accent,
+              overflowWrap: "anywhere",
             }}
           >
             📻 Radyo İstasyonları (Sağ)
@@ -605,18 +670,12 @@ export function App() {
                     color: theme.text,
                     textAlign: "left",
                     cursor: "pointer",
+                    width: "100%",
+                    minWidth: 0,
                   }}
                 >
-                  <strong style={{ fontSize: "16px", fontWeight: 800 }}>
-                    {item.title}
-                  </strong>
-                  <span
-                    style={{
-                      fontSize: "13px",
-                      color: theme.muted,
-                      fontWeight: 600,
-                    }}
-                  >
+                  <strong style={cardTextStyle}>{item.title}</strong>
+                  <span style={metaTextStyle}>
                     {item.group || "Radyo"} • {item.sources.length} kaynak
                   </span>
                 </button>
@@ -634,6 +693,7 @@ export function App() {
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
+            minWidth: 0,
           }}
         >
           <h2
@@ -649,125 +709,31 @@ export function App() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
               gap: "12px",
             }}
           >
-            {extraItems.map((item, idx) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSelectItem(item, "tv", idx)}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: "6px",
-                  padding: "14px",
-                  borderRadius: "12px",
-                  border: `1px solid ${theme.border}`,
-                  backgroundColor: theme.card,
-                  color: theme.text,
-                  textAlign: "left",
-                  cursor: "pointer",
-                }}
-              >
-                <strong style={{ fontSize: "15px", fontWeight: 800 }}>
-                  {item.title}
-                </strong>
-                <span
-                  style={{
-                    fontSize: "13px",
-                    color: theme.muted,
-                    fontWeight: 600,
+            {extraItems.map((item, idx) => {
+              const isFocused =
+                focusTarget.column === "extra" && focusTarget.index === idx;
+              return (
+                <button
+                  key={item.id}
+                  ref={(el) => {
+                    extraCardRefs.current[idx] = el;
                   }}
-                >
-                  {item.group || CATEGORY_LABELS[item.category]}
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section
-        aria-label="Medya Oynatıcı"
-        style={{
-          display: isPlayerOpen ? "flex" : "none",
-          position: "fixed",
-          inset: 0,
-          backgroundColor: "#000",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          zIndex: 60,
-        }}
-      >
-        <video
-          ref={videoRef}
-          controls
-          autoPlay
-          playsInline
-          style={{ width: "100%", height: "100%", maxHeight: "80vh" }}
-        />
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-            padding: "14px 20px",
-            backgroundColor: theme.surface,
-          }}
-        >
-          <div>
-            <div style={{ fontWeight: 900, fontSize: "17px" }}>
-              {selectedItem?.title || "Yayın"}
-            </div>
-            <div
-              style={{ fontSize: "14px", color: theme.focus, fontWeight: 700 }}
-            >
-              {statusMessage}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button
-              ref={backupBtnRef}
-              type="button"
-              onClick={handleSwitchBackup}
-              style={{
-                padding: "10px 16px",
-                borderRadius: "10px",
-                border: `1px solid ${theme.border}`,
-                backgroundColor: theme.card,
-                color: theme.text,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              Yedek Kaynak Değiştir
-            </button>
-            <button
-              type="button"
-              onClick={handleClosePlayer}
-              style={{
-                padding: "10px 16px",
-                borderRadius: "10px",
-                border: "1px solid #ef4444",
-                backgroundColor: "#7f1d1d",
-                color: "#fef2f2",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              Kapat
-            </button>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-export default App;
+                  type="button"
+                  onFocus={() => setFocusTarget({ column: "extra", index: idx })}
+                  onKeyDown={(e) => handleColumnKeyDown(e, "extra", idx)}
+                  onClick={() => handleSelectItem(item, "extra", idx)}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: "6px",
+                    padding: "14px",
+                    borderRadius: "12px",
+                    border: isFocused
+                      ? `2px solid ${theme.focus}`
+                      : `1px solid ${theme.border}`,
+                    backgroundColor
