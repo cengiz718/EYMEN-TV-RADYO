@@ -12,8 +12,8 @@ android {
         applicationId = "com.cengiz718.eymentvradyopro"
         minSdk = 24
         targetSdk = 35
-        versionCode = 9
-        versionName = "7.2.0"
+        versionCode = 10
+        versionName = "7.3.0"
     }
     buildFeatures { buildConfig = true }
     signingConfigs {
@@ -34,9 +34,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            if (!releaseKeystorePath.isNullOrBlank()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            if (!releaseKeystorePath.isNullOrBlank()) signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
