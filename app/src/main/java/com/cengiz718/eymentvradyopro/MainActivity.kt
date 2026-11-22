@@ -108,11 +108,7 @@ class MainActivity : AppCompatActivity() {
                     request: WebResourceRequest?
                 ): Boolean {
                     val targetUrl = request?.url?.toString() ?: return false
-                    return if (targetUrl.startsWith("http://") || targetUrl.startsWith("https://")) {
-                        false
-                    } else {
-                        true
-                    }
+                    return !(targetUrl.startsWith("http://") || targetUrl.startsWith("https://"))
                 }
             }
         }
@@ -140,9 +136,9 @@ class MainActivity : AppCompatActivity() {
                 val pInfo = packageManager.getPackageInfo(packageName, 0)
                 @Suppress("DEPRECATION")
                 val currentVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    pInfo.longVersionCode.toInt()
+                    pInfo.longVersionCode
                 } else {
-                    pInfo.versionCode
+                    pInfo.versionCode.toLong()
                 }
 
                 if (remoteVersionCode > currentVersionCode && apkUrl.isNotBlank()) {
@@ -170,4 +166,95 @@ class MainActivity : AppCompatActivity() {
             val destFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "eymen-update.apk")
             if (destFile.exists()) destFile.delete()
 
-            val request = DownloadManager.Request(Uri
+            val request = DownloadManager.Request(Uri.parse(apkUrl))
+                .setTitle("Eymen TV & Radyo Güncelleniyor")
+                .setDescription("Yeni sürüm indiriliyor...")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "eymen-update.apk")
+
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            downloadId = dm.enqueue(request)
+            Toast.makeText(this, "Güncelleme indiriliyor...", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "İndirme başlatılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun installDownloadedApk() {
+        try {
+            val apkFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "eymen-update.apk")
+            if (!apkFile.exists()) return
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(settingsIntent)
+                Toast.makeText(this, "Güncellemenin kurulması için bu uygulamaya izin verin.", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            val apkUri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                apkFile
+            )
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(installIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Kurulum açılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun closeAppCompletely() {
+        if (!webViewDestroyed) {
+            try {
+                webView.stopLoading()
+                webView.loadUrl("about:blank")
+                webView.clearHistory()
+                webView.removeAllViews()
+                webView.destroy()
+            } catch (_: Exception) {
+            } finally {
+                webViewDestroyed = true
+            }
+        }
+        finishAndRemoveTask()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            closeAppCompletely()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        closeAppCompletely()
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(downloadReceiver)
+        } catch (_: Exception) {
+        }
+        if (!webViewDestroyed && ::webView.isInitialized) {
+            try {
+                webView.stopLoading()
+                webView.removeAllViews()
+                webView.destroy()
+            } catch (_: Exception) {
+            } finally {
+                webViewDestroyed = true
+            }
+        }
+        super.onDestroy()
+    }
+}
