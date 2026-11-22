@@ -103,15 +103,27 @@ const CATEGORY_LABELS: Record<MediaCategory, string> = {
 export function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const controllerRef = useRef<EymenStreamController | null>(null);
+  const cardRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const backupBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [activeCategory, setActiveCategory] = useState<MediaCategory>("tv");
   const [catalogs, setCatalogs] =
     useState<Record<MediaCategory, MediaItem[]>>(FALLBACK_CATALOG);
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
+  const [lastPlayedIndex, setLastPlayedIndex] = useState<number>(0);
+  const [focusedIndex, setFocusedIndex] = useState<number>(0);
   const [statusMessage, setStatusMessage] = useState<string>(
     "Yayın seçmek için bir kart seçin"
   );
   const [isPlayerOpen, setIsPlayerOpen] = useState<boolean>(false);
+
+  const focusCardAt = (idx: number) => {
+    const target = cardRefs.current[idx];
+    if (target) {
+      target.focus();
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  };
 
   useEffect(() => {
     const mediaEl = videoRef.current;
@@ -135,31 +147,81 @@ export function App() {
     };
   }, []);
 
-  const handleSelectItem = (item: MediaItem) => {
+  // Kategori değiştiğinde odağı ilk karta taşı
+  useEffect(() => {
+    if (isPlayerOpen) return;
+    setFocusedIndex(0);
+    const timer = window.setTimeout(() => {
+      focusCardAt(0);
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [activeCategory, catalogs, isPlayerOpen]);
+
+  const handleSelectItem = (item: MediaItem, idx: number) => {
     setSelectedItem(item);
+    setLastPlayedIndex(idx);
     setIsPlayerOpen(true);
     setStatusMessage(`${item.title} hazırlanıyor...`);
 
-    // DOM görünürlüğü güncellendikten hemen sonra oynatmayı başlat
     requestAnimationFrame(() => {
       controllerRef.current?.playItem(item, 0);
+      backupBtnRef.current?.focus();
     });
   };
 
   const handleSwitchBackup = () => {
     controllerRef.current?.cycleSourceManual();
+    backupBtnRef.current?.focus();
   };
 
   const handleClosePlayer = () => {
     controllerRef.current?.stop();
     setIsPlayerOpen(false);
     setStatusMessage("Oynatıcı kapatıldı");
+
+    window.setTimeout(() => {
+      setFocusedIndex(lastPlayedIndex);
+      focusCardAt(lastPlayedIndex);
+    }, 30);
+  };
+
+  // D-Pad / Klavye yön tuşları için güvenli odak yönetimi
+  const handleGridKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = catalogs[activeCategory] || [];
+    if (!items.length) return;
+
+    const cols = Math.max(1, Math.floor((e.currentTarget.clientWidth || 800) / 214));
+    let nextIdx = focusedIndex;
+
+    if (e.key === "ArrowRight") {
+      nextIdx = Math.min(items.length - 1, focusedIndex + 1);
+    } else if (e.key === "ArrowLeft") {
+      nextIdx = Math.max(0, focusedIndex - 1);
+    } else if (e.key === "ArrowDown") {
+      nextIdx = Math.min(items.length - 1, focusedIndex + cols);
+    } else if (e.key === "ArrowUp") {
+      nextIdx = Math.max(0, focusedIndex - cols);
+    } else {
+      return;
+    }
+
+    e.preventDefault();
+    setFocusedIndex(nextIdx);
+    focusCardAt(nextIdx);
   };
 
   const currentItems = catalogs[activeCategory] || [];
 
   return (
     <div style={{ minHeight: "100vh", background: "#0c0f16", color: "#f3f6fc" }}>
+      <style>{`
+        button:focus,
+        button:focus-visible {
+          outline: 3px solid #facc15 !important;
+          outline-offset: 2px !important;
+        }
+      `}</style>
+
       <header
         style={{
           display: "flex",
@@ -193,7 +255,10 @@ export function App() {
         })}
       </header>
 
-      <main
+      <div
+        role="region"
+        aria-label="İçerik Listesi"
+        onKeyDown={handleGridKeyDown}
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
@@ -201,33 +266,42 @@ export function App() {
           padding: "18px",
         }}
       >
-        {currentItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => handleSelectItem(item)}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-              gap: "6px",
-              padding: "16px",
-              borderRadius: "12px",
-              border: "1px solid #283248",
-              background: "#1d2434",
-              color: "#f3f6fc",
-              textAlign: "left",
-              cursor: "pointer",
-            }}
-          >
-            <strong>{item.title}</strong>
-            <span style={{ fontSize: "13px", color: "#9aa5bd" }}>
-              {item.group || CATEGORY_LABELS[item.category]} •{" "}
-              {item.sources.length} kaynak
-            </span>
-          </button>
-        ))}
-      </main>
+        {currentItems.map((item, idx) => {
+          const isHighlighted = idx === focusedIndex;
+          return (
+            <button
+              key={item.id}
+              ref={(el) => {
+                cardRefs.current[idx] = el;
+              }}
+              type="button"
+              onFocus={() => setFocusedIndex(idx)}
+              onClick={() => handleSelectItem(item, idx)}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: "6px",
+                padding: "16px",
+                borderRadius: "12px",
+                border: isHighlighted
+                  ? "2px solid #facc15"
+                  : "1px solid #283248",
+                background: isHighlighted ? "#242e44" : "#1d2434",
+                color: "#f3f6fc",
+                textAlign: "left",
+                cursor: "pointer",
+              }}
+            >
+              <strong>{item.title}</strong>
+              <span style={{ fontSize: "13px", color: "#9aa5bd" }}>
+                {item.group || CATEGORY_LABELS[item.category]} •{" "}
+                {item.sources.length} kaynak
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
       <section
         aria-label="Medya Oynatıcı"
@@ -271,6 +345,7 @@ export function App() {
 
           <div style={{ display: "flex", gap: "8px" }}>
             <button
+              ref={backupBtnRef}
               type="button"
               onClick={handleSwitchBackup}
               style={{
