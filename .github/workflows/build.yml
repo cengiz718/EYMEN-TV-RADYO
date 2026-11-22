@@ -65,7 +65,9 @@ jobs:
         run: gradle --no-daemon --stacktrace :app:assembleRelease
 
       - name: APK imzasını doğrula
-        run: $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -n 1)/apksigner verify app/build/outputs/apk/release/app-release.apk
+        run: |
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -n 1)
+          "$BUILD_TOOLS_DIR/apksigner" verify app/build/outputs/apk/release/app-release.apk
 
       - name: APK artifact
         uses: actions/upload-artifact@v4
