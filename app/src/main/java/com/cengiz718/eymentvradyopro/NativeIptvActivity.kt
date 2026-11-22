@@ -44,7 +44,7 @@ class NativeIptvActivity : Activity() {
     private var currentIndex = -1
     private var wasPlaying = false
     private val accent = Color.rgb(255, 177, 72)
-    private val background = Color.rgb(8, 11, 18)
+    private val screenBgColor = Color.rgb(8, 11, 18)
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -133,7 +133,7 @@ class NativeIptvActivity : Activity() {
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val root = LinearLayout(this).apply {
             orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(screenBgColor)
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
 
