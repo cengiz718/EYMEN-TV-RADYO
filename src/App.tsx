@@ -222,6 +222,7 @@ export default function App() {
 
   return (
     <div
+      className="eymen-shell"
       onKeyDown={handleKeyDown}
       style={{
         minHeight: "100vh",
@@ -235,6 +236,7 @@ export default function App() {
     >
       {/* 1. EN ÜST: Geniş Video Oynatıcı Alanı */}
       <section
+        className="eymen-player-card"
         style={{
           backgroundColor: panelBg,
           borderRadius: "12px",
@@ -284,6 +286,7 @@ export default function App() {
 
       {/* 2. ORTA: Oynatıcının Altında Kontrol & Arama Menüsü */}
       <section
+        className="eymen-controls"
         style={{
           display: "flex",
           flexWrap: "wrap",
@@ -391,6 +394,7 @@ export default function App() {
 
       {/* 3. EN ALT: Gruplanmış Türkçe TV (Sol) ve Radyo (Sağ) Menüleri */}
       <main
+        className="eymen-content"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
