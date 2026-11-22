@@ -27,12 +27,13 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 private data class TvChannel(val name: String, val url: String, val group: String)
 
 class NativeIptvActivity : Activity() {
-    private val io = Executors.newSingleThreadExecutor()
+    private var io: ExecutorService = Executors.newSingleThreadExecutor()
     private val prefs by lazy { getSharedPreferences("eymen_tv_prefs", MODE_PRIVATE) }
     private lateinit var playerView: PlayerView
     private lateinit var status: TextView
@@ -58,6 +59,9 @@ class NativeIptvActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (io.isShutdown || io.isTerminated) {
+            io = Executors.newSingleThreadExecutor()
+        }
         immersive()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         buildPlayer()
@@ -73,16 +77,24 @@ class NativeIptvActivity : Activity() {
     }
 
     private fun buildPlayer() {
+        player?.release()
         player = ExoPlayer.Builder(this).build().also { exo ->
             exo.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
-                    status.text = "Yayın hatası: ${error.errorCodeName}"
+                    val activeName = channels.getOrNull(currentIndex)?.name ?: "Yayın"
+                    status.text = "Yayın hatası ($activeName): ${error.errorCodeName}"
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_BUFFERING) status.text = "Yayın yükleniyor..."
-                    if (state == Player.STATE_READY) {
-                        status.text = "ŞİMDİ OYNATILIYOR • ${channels.getOrNull(currentIndex)?.name ?: "Yayın"}"
+                    when (state) {
+                        Player.STATE_BUFFERING -> status.text = "Yayın yükleniyor..."
+                        Player.STATE_READY -> {
+                            val activeName = channels.getOrNull(currentIndex)?.name ?: "Yayın"
+                            status.text = "ŞİMDİ OYNATILIYOR • $activeName"
+                        }
+                        Player.STATE_ENDED -> {
+                            status.text = "Yayın sona erdi"
+                        }
                     }
                 }
             })
@@ -125,7 +137,7 @@ class NativeIptvActivity : Activity() {
             isFocusable = true
             isFocusableInTouchMode = true
             setTextColor(Color.WHITE)
-            setBackground(focusBackground())
+            background = focusBackground()
             setOnClickListener { action() }
         }
 
@@ -408,11 +420,14 @@ class NativeIptvActivity : Activity() {
     }
 
     private fun play(channel: TvChannel) {
-        currentIndex = channels.indexOf(channel)
+        val foundIndex = channels.indexOf(channel)
+        if (foundIndex >= 0) currentIndex = foundIndex
         status.text = "Açılıyor: ${channel.name}"
-        player?.setMediaItem(MediaItem.fromUri(channel.url))
-        player?.prepare()
-        player?.playWhenReady = true
+        player?.apply {
+            setMediaItem(MediaItem.fromUri(channel.url))
+            prepare()
+            playWhenReady = true
+        }
         playerView.requestFocus()
         playerView.showController()
     }
