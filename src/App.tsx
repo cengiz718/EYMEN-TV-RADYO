@@ -120,6 +120,7 @@ export default function App() {
   });
   const [searchQuery, setSearchQuery] = useState("");
   const [darkTheme, setDarkTheme] = useState(true);
+  const [activeRightTab, setActiveRightTab] = useState<"tv" | "radio">("tv");
 
   useEffect(() => {
     const el = mediaRef.current;
@@ -305,7 +306,7 @@ export default function App() {
           type="search"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Kanal, radyo veya grup ara..."
+          placeholder="TV kanalı veya radyo ara..."
           style={{
             padding: "10px 14px",
             fontSize: "15px",
@@ -392,147 +393,121 @@ export default function App() {
         </div>
       </section>
 
-      {/* 3. EN ALT: Gruplanmış Türkçe TV (Sol) ve Radyo (Sağ) Menüleri */}
-      <main
-        className="eymen-content"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-          gap: "14px",
-        }}
-      >
-        <section
-          style={{
-            backgroundColor: panelBg,
-            borderRadius: "12px",
-            padding: "14px",
-            border: "1px solid rgba(148, 163, 184, 0.25)",
-          }}
-        >
-          <h2 style={{ marginTop: 0, marginBottom: "12px", fontSize: "18px", color: pageFg }}>
-            Türkçe TV Kanalları
-          </h2>
-
-          {tvGroups.length === 0 ? (
-            <div style={{ padding: "12px", color: darkTheme ? "#cbd5e1" : "#334155" }}>
-              Gösterilecek TV yayını bulunamadı.
+      {/* 3. AYRILMIŞ ALANLAR: Film/Dizi solda, TV/Radyo sağda */}
+      <main className="eymen-content eymen-main-layout">
+        <section className="eymen-library-panel" style={{
+          backgroundColor: panelBg,
+          borderRadius: "16px",
+          padding: "16px",
+          border: "1px solid rgba(148, 163, 184, 0.25)",
+          minWidth: 0,
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}}>
+            <div aria-hidden="true" style={{fontSize:"26px"}}>🎬</div>
+            <div>
+              <h2 style={{margin:0,fontSize:"19px",fontWeight:800,color:pageFg}}>FİLM & DİZİ</h2>
+              <div style={{fontSize:"12px",color:darkTheme?"#94a3b8":"#64748b"}}>Sol bölüm · Film ve dizi arşivi</div>
             </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              {tvGroups.map(([groupName, items]) => (
-                <div key={groupName}>
-                  <div
-                    style={{
-                      fontSize: "14px",
-                      fontWeight: 700,
-                      color: darkTheme ? "#93c5fd" : "#1d4ed8",
-                      marginBottom: "6px",
-                      paddingBottom: "4px",
-                      borderBottom: "1px solid rgba(148, 163, 184, 0.2)",
-                    }}
-                  >
-                    {groupName} ({items.length})
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    {items.map((item) => {
-                      const active = selectedItem?.id === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          data-tv-focus="true"
-                          onClick={() => handleSelectItem(item)}
-                          style={{
-                            textAlign: "left",
-                            padding: "11px 14px",
-                            fontSize: "15px",
-                            fontWeight: active ? 700 : 500,
-                            borderRadius: "8px",
-                            cursor: "pointer",
-                            border: active ? "2px solid #60a5fa" : "1px solid #475569",
-                            backgroundColor: active ? "#1d4ed8" : itemBg,
-                            color: active ? "#ffffff" : pageFg,
-                          }}
-                        >
-                          {item.title}
-                          {item.sources.length > 1
-                            ? ` • ${item.sources.length} kaynak`
-                            : ""}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:"10px",marginBottom:"16px"}}>
+            <div style={{background:itemBg,border:"1px solid rgba(148,163,184,.22)",borderRadius:"12px",padding:"14px",minHeight:"92px"}}>
+              <div style={{fontSize:"23px",marginBottom:"5px"}}>🎞️</div>
+              <div style={{fontWeight:800,color:pageFg}}>Filmler</div>
+              <div style={{fontSize:"11px",color:darkTheme?"#94a3b8":"#64748b"}}>Yayın listesi boş</div>
             </div>
-          )}
+            <div style={{background:itemBg,border:"1px solid rgba(148,163,184,.22)",borderRadius:"12px",padding:"14px",minHeight:"92px"}}>
+              <div style={{fontSize:"23px",marginBottom:"5px"}}>📺</div>
+              <div style={{fontWeight:800,color:pageFg}}>Diziler</div>
+              <div style={{fontSize:"11px",color:darkTheme?"#94a3b8":"#64748b"}}>Yayın listesi boş</div>
+            </div>
+          </div>
+          <div style={{
+            border:"1px dashed rgba(148,163,184,.38)",
+            borderRadius:"12px",
+            padding:"18px 14px",
+            textAlign:"center",
+            background:darkTheme?"rgba(15,23,42,.55)":"rgba(241,245,249,.75)",
+          }}>
+            <div style={{fontSize:"28px",marginBottom:"8px"}}>🧹</div>
+            <div style={{fontWeight:750,color:pageFg,marginBottom:"5px"}}>Film ve dizi yayın bağlantıları kaldırıldı</div>
+            <div style={{fontSize:"12px",lineHeight:1.55,color:darkTheme?"#cbd5e1":"#475569"}}>
+              Beğenmediğin film/dizi yayınları bu ekranda gösterilmiyor. Doğrulanmış yeni bir liste eklenene kadar bu bölüm boş kalacak.
+            </div>
+          </div>
         </section>
 
-        <section
-          style={{
-            backgroundColor: panelBg,
-            borderRadius: "12px",
-            padding: "14px",
-            border: "1px solid rgba(148, 163, 184, 0.25)",
-          }}
-        >
-          <h2 style={{ marginTop: 0, marginBottom: "12px", fontSize: "18px", color: pageFg }}>
-            Türkçe Radyolar
-          </h2>
+        <section className="eymen-live-panel" style={{
+          backgroundColor: panelBg,
+          borderRadius: "16px",
+          padding: "14px",
+          border: "1px solid rgba(148, 163, 184, 0.25)",
+          minWidth: 0,
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
+            <div aria-hidden="true" style={{fontSize:"26px"}}>📡</div>
+            <div>
+              <h2 style={{margin:0,fontSize:"19px",fontWeight:800,color:pageFg}}>TV & RADYO</h2>
+              <div style={{fontSize:"12px",color:darkTheme?"#94a3b8":"#64748b"}}>Sağ bölüm · Canlı yayınlar</div>
+            </div>
+          </div>
 
-          {radioGroups.length === 0 ? (
-            <div style={{ padding: "12px", color: darkTheme ? "#cbd5e1" : "#334155" }}>
-              Gösterilecek radyo yayını bulunamadı.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              {radioGroups.map(([groupName, items]) => (
-                <div key={groupName}>
-                  <div
-                    style={{
-                      fontSize: "14px",
-                      fontWeight: 700,
-                      color: darkTheme ? "#6ee7b7" : "#047857",
-                      marginBottom: "6px",
-                      paddingBottom: "4px",
-                      borderBottom: "1px solid rgba(148, 163, 184, 0.2)",
-                    }}
-                  >
-                    {groupName} ({items.length})
+          <div role="tablist" aria-label="Canlı yayın türü" style={{
+            display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",
+            padding:"5px",borderRadius:"12px",background:darkTheme?"#0f172a":"#e2e8f0",
+            marginBottom:"14px",
+          }}>
+            <button type="button" role="tab" aria-selected={activeRightTab==="tv"}
+              data-tv-focus="true" onClick={()=>setActiveRightTab("tv")}
+              style={{padding:"11px 8px",border:0,borderRadius:"9px",fontWeight:800,
+                background:activeRightTab==="tv"?"#2563eb":"transparent",
+                color:activeRightTab==="tv"?"#fff":pageFg,cursor:"pointer"}}>
+              📺 TELEVİZYON ({tvGroups.reduce((n,[,items])=>n+items.length,0)})
+            </button>
+            <button type="button" role="tab" aria-selected={activeRightTab==="radio"}
+              data-tv-focus="true" onClick={()=>setActiveRightTab("radio")}
+              style={{padding:"11px 8px",border:0,borderRadius:"9px",fontWeight:800,
+                background:activeRightTab==="radio"?"#047857":"transparent",
+                color:activeRightTab==="radio"?"#fff":pageFg,cursor:"pointer"}}>
+              🎵 RADYO ({radioGroups.reduce((n,[,items])=>n+items.length,0)})
+            </button>
+          </div>
+
+          {(() => {
+            const groups = activeRightTab === "tv" ? tvGroups : radioGroups;
+            const accent = activeRightTab === "tv" ? (darkTheme?"#93c5fd":"#1d4ed8") : (darkTheme?"#6ee7b7":"#047857");
+            return groups.length === 0 ? (
+              <div style={{padding:"14px",color:darkTheme?"#cbd5e1":"#334155"}}>
+                {activeRightTab === "tv" ? "Gösterilecek TV yayını bulunamadı." : "Gösterilecek radyo yayını bulunamadı."}
+              </div>
+            ) : (
+              <div style={{display:"flex",flexDirection:"column",gap:"14px"}}>
+                {groups.map(([groupName,items])=>(
+                  <div key={groupName}>
+                    <div style={{fontSize:"13px",fontWeight:800,color:accent,marginBottom:"7px",
+                      paddingBottom:"5px",borderBottom:"1px solid rgba(148,163,184,.2)"}}>
+                      {groupName} ({items.length})
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:"7px"}}>
+                      {items.map(item=>{
+                        const active=selectedItem?.id===item.id;
+                        return <button key={item.id} type="button" data-tv-focus="true"
+                          onClick={()=>handleSelectItem(item)}
+                          style={{textAlign:"left",padding:"11px 12px",minHeight:"44px",
+                            fontSize:"14px",fontWeight:active?800:600,borderRadius:"10px",
+                            cursor:"pointer",border:active?"2px solid #60a5fa":"1px solid #475569",
+                            backgroundColor:active?(activeRightTab==="tv"?"#1d4ed8":"#047857"):itemBg,
+                            color:active?"#fff":pageFg}}>
+                          {item.title}{item.sources.length>1? ` · ${item.sources.length} kaynak`:""}
+                        </button>;
+                      })}
+                    </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    {items.map((item) => {
-                      const active = selectedItem?.id === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          data-tv-focus="true"
-                          onClick={() => handleSelectItem(item)}
-                          style={{
-                            textAlign: "left",
-                            padding: "11px 14px",
-                            fontSize: "15px",
-                            fontWeight: active ? 700 : 500,
-                            borderRadius: "8px",
-                            cursor: "pointer",
-                            border: active ? "2px solid #34d399" : "1px solid #475569",
-                            backgroundColor: active ? "#047857" : itemBg,
-                            color: active ? "#ffffff" : pageFg,
-                          }}
-                        >
-                          {item.title}
-                          {item.sources.length > 1
-                            ? ` • ${item.sources.length} kaynak`
-                            : ""}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            );
+          })()}
         </section>
-      </main>
+      </main>/main>
     </div>
   );
 }
