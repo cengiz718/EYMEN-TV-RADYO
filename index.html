@@ -2,7 +2,7 @@
 <html lang="tr" data-theme="modern">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Eymen TV &amp; Radyo</title>
     <meta name="description" content="Canlı TV kanalları, çoklu ekran modu, online radyo, EPG yayın akışı ve M3U/Xtream destekli televizyon ve mobil yayın oynatıcısı." />
     <meta property="og:title" content="Eymen TV &amp; Radyo" />
@@ -15,9 +15,52 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
+    <style>
+      html,
+      body,
+      #root {
+        position: relative;
+        width: 100%;
+        min-height: 100%;
+        overflow-x: hidden;
+        touch-action: manipulation;
+      }
+
+      /* Dekoratif dalga / görsel / arka plan katmanlarının sağ menüye tıklamayı kesmesini önler */
+      [class*="visualizer"],
+      [class*="wave"],
+      [class*="backdrop"],
+      [class*="ambient"],
+      [class*="glow"],
+      canvas {
+        pointer-events: none;
+      }
+
+      /* Sağ çekmece / sağ panel / ayarlar / modal katmanlarını her zaman tıklanabilir tutar */
+      [class*="right-panel"],
+      [class*="rightPanel"],
+      [class*="drawer"],
+      [class*="sidebar-right"],
+      [class*="modal"],
+      [role="dialog"],
+      aside {
+        position: relative;
+        z-index: 9990;
+        pointer-events: auto !important;
+      }
+
+      /* Sağ panel içindeki tüm buton, input, select ve tıklanabilir öğelerin etkileşimini garanti eder */
+      [class*="right-panel"] *,
+      [class*="rightPanel"] *,
+      [class*="drawer"] *,
+      [class*="modal"] *,
+      [role="dialog"] * {
+        pointer-events: auto !important;
+      }
+    </style>
   </head>
   <body class="bg-[var(--bg)] text-[var(--ink)] antialiased">
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
