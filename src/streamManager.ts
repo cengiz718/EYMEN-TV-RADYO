@@ -43,6 +43,16 @@ function isValidUrl(url: unknown): url is string {
   return typeof url === "string" && /^https?:\/\//i.test(url.trim());
 }
 
+function cleanStreamTitle(rawTitle: string): string {
+  return (rawTitle || "")
+    .replace(/\s+/g, " ")
+    .replace(/\bT\s*R\s*K\s*E\b/gi, "TÜRKÇE")
+    .replace(/\bS\s*N\s*E\s*M\s*A\b/gi, "SİNEMA")
+    .replace(/\bM\s*Z\s*K\b/gi, "MÜZİK")
+    .replace(/\bB\s*L\s*M\s*KURGU\b/gi, "BİLİM KURGU")
+    .trim();
+}
+
 function normalizeSources(item: MediaItem): StreamSource[] {
   const rawSources = Array.isArray(item.sources) ? item.sources : [];
   const valid = rawSources
@@ -74,10 +84,11 @@ function normalizeMediaItem(
 ): MediaItem | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
-  const title =
+  const rawTitle =
     typeof obj.title === "string" && obj.title.trim()
       ? obj.title.trim()
       : `Yayın ${fallbackIndex + 1}`;
+  const title = cleanStreamTitle(rawTitle) || `Yayın ${fallbackIndex + 1}`;
 
   const item: MediaItem = {
     id:
@@ -347,7 +358,7 @@ export class EymenStreamController {
   }
 }
 
-function parseM3uToItems(
+export function parseM3uToItems(
   m3uText: string,
   category: ActiveMediaCategory
 ): MediaItem[] {
@@ -357,50 +368,71 @@ function parseM3uToItems(
     .filter(Boolean);
 
   const grouped = new Map<string, MediaItem>();
-  let currentTitle = "";
-  let currentGroup = category === "tv" ? "Canlı TV" : "Radyo";
-  let currentLogo = "";
 
-  for (const line of lines) {
-    if (line.startsWith("#EXTINF:")) {
-      const groupMatch = line.match(/group-title="([^"]*)"/i);
-      const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
-      const titleMatch = line.match(/,(.+)$/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("#EXTINF:")) continue;
 
-      currentGroup =
-        groupMatch?.[1]?.trim() || (category === "tv" ? "Canlı TV" : "Radyo");
-      currentLogo = logoMatch?.[1]?.trim() || "";
-      currentTitle = titleMatch?.[1]?.trim() || "İsimsiz Yayın";
-    } else if (isValidUrl(line)) {
-      const cleanUrl = line.trim().replace(/(?<!:)\/{2,}/g, "/");
-      const key = `${category}:${currentTitle.toLowerCase()}`;
-      const existing = grouped.get(key);
+    const nextLine = lines[i + 1];
+    // Sonraki satır yoksa veya yeni bir # satırıysa #EXTINF yarım kalmış demektir -> atla
+    if (!nextLine || nextLine.startsWith("#")) {
+      continue;
+    }
 
-      const newSource: StreamSource = {
-        id: `${key}-${existing ? existing.sources.length + 1 : 1}`,
-        label: existing
-          ? `Yedek Yayın ${existing.sources.length}`
-          : "Ana Yayın",
-        url: cleanUrl,
-        priority: existing ? existing.sources.length + 1 : 1,
-      };
+    const cleanUrl = nextLine.trim().replace(/(?<!:)\/{2,}/g, "/");
+    if (!isValidUrl(cleanUrl)) {
+      i++;
+      continue;
+    }
 
-      if (existing) {
-        existing.sources.push(newSource);
-      } else {
-        grouped.set(key, {
-          id: `${category}-${grouped.size + 1}`,
-          title: currentTitle || `Yayın ${grouped.size + 1}`,
-          category,
-          group: currentGroup,
-          logo: isValidUrl(currentLogo) ? currentLogo : undefined,
-          sources: [newSource],
+    const tvgNameMatch = line.match(/tvg-name="([^"]*)"/i);
+    const groupMatch = line.match(/group-title="([^"]*)"/i);
+    const logoMatch = line.match(/tvg-logo="([^"]*)"/i);
+    const titleMatch = line.match(/,(.+)$/);
+
+    const currentGroup =
+      groupMatch?.[1]?.trim() || (category === "tv" ? "Canlı TV" : "Radyo");
+    const currentLogo = logoMatch?.[1]?.trim() || "";
+    const rawTitle =
+      tvgNameMatch?.[1]?.trim() ||
+      titleMatch?.[1]?.trim() ||
+      `Yayın ${grouped.size + 1}`;
+    const currentTitle = cleanStreamTitle(rawTitle) || `Yayın ${grouped.size + 1}`;
+
+    const key = `${category}:${currentTitle.toLowerCase()}`;
+    const existing = grouped.get(key);
+
+    if (existing) {
+      const alreadyHasUrl = existing.sources.some((s) => s.url === cleanUrl);
+      if (!alreadyHasUrl) {
+        const nextNum = existing.sources.length + 1;
+        existing.sources.push({
+          id: `${existing.id}-s${nextNum}`,
+          label: `Yedek Yayın ${nextNum - 1}`,
+          url: cleanUrl,
+          priority: nextNum,
         });
       }
-
-      currentTitle = "";
-      currentLogo = "";
+    } else {
+      const baseId = `${category}-${grouped.size + 1}`;
+      grouped.set(key, {
+        id: baseId,
+        title: currentTitle,
+        category,
+        group: currentGroup,
+        logo: isValidUrl(currentLogo) ? currentLogo : undefined,
+        sources: [
+          {
+            id: `${baseId}-s1`,
+            label: "Ana Yayın",
+            url: cleanUrl,
+            priority: 1,
+          },
+        ],
+      });
     }
+
+    i++; // URL satırını işlediğimiz için bir sonraki satıra geç
   }
 
   return Array.from(grouped.values());
