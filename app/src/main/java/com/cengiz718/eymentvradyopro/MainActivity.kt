@@ -1,156 +1,194 @@
 package com.cengiz718.eymentvradyopro
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.view.KeyEvent
-import android.view.View
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.EditText
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private val prefsName = "EymenTvPrefs"
-    private val keySavedUrl = "saved_stream_url"
+    private val baseAppUrl = "https://cengiz718.github.io/EYMEN-TV-RADYO/"
+    private val versionJsonUrl = "https://cengiz718.github.io/EYMEN-TV-RADYO/version.json"
+    private var downloadId: Long = -1L
 
-    // Kalıcı GitHub Pages ve yedek adres listesi
-    private val defaultUrls = listOf(
-        "https://cengiz718.github.io/EYMEN-TV-RADYO/",
-        "https://eymen-tv-radyo-pro.ai.studio/"
-    )
-    private var currentUrlIndex = 0
+    private val downloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
+            if (id == downloadId && downloadId != -1L) {
+                installDownloadedApk()
+            }
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Tam ekran (Mi Box ve telefon uyumlu)
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                downloadReceiver,
+                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+                Context.RECEIVER_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(
+                downloadReceiver,
+                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            )
+        }
 
-        webView = WebView(this)
+        webView = WebView(this).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+            requestFocus()
+
+            clearCache(true)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            settings.cacheMode = WebSettings.LOAD_NO_CACHE
+            settings.userAgentString = settings.userAgentString.replace("; wv", "")
+
+            webChromeClient = WebChromeClient()
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    val targetUrl = request?.url?.toString() ?: return false
+                    return !(targetUrl.startsWith("http://") || targetUrl.startsWith("https://"))
+                }
+            }
+        }
+
         setContentView(webView)
+        webView.loadUrl("$baseAppUrl?t=${System.currentTimeMillis()}")
+        checkForAppUpdate()
+    }
 
-        val settings: WebSettings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.mediaPlaybackRequiresUserGesture = false
-        settings.allowFileAccess = true
-        settings.allowContentAccess = true
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
+    private fun checkForAppUpdate() {
+        thread {
+            try {
+                val conn = URL("$versionJsonUrl?t=${System.currentTimeMillis()}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                if (conn.responseCode != 200) return@thread
 
-        webView.webChromeClient = WebChromeClient()
-        webView.webViewClient = object : WebViewClient() {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val remoteVersionCode = json.optInt("versionCode", 1)
+                val remoteVersionName = json.optString("versionName", "")
+                val apkUrl = json.optString("apkUrl", "")
+                val notes = json.optString("releaseNotes", "Yeni güncelleme mevcut.")
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                // Sayfa sorunsuz açıldıysa adresi otomatik kaydet
-                if (!url.isNullOrBlank() && !url.startsWith("about:")) {
-                    saveUrl(url)
+                val pInfo = packageManager.getPackageInfo(packageName, 0)
+                @Suppress("DEPRECATION")
+                val currentVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    pInfo.longVersionCode.toInt()
+                } else {
+                    pInfo.versionCode
                 }
-            }
 
-            override fun onReceivedHttpError(
-                view: WebView?,
-                request: WebResourceRequest?,
-                errorResponse: WebResourceResponse?
-            ) {
-                super.onReceivedHttpError(view, request, errorResponse)
-                if (request?.isForMainFrame == true && (errorResponse?.statusCode == 404 || (errorResponse?.statusCode ?: 0) >= 500)) {
-                    tryNextOrPrompt()
+                if (remoteVersionCode > currentVersionCode && apkUrl.isNotBlank()) {
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            AlertDialog.Builder(this)
+                                .setTitle("Güncelleme Mevcut ($remoteVersionName)")
+                                .setMessage(notes)
+                                .setCancelable(true)
+                                .setPositiveButton("Güncelle") { _, _ ->
+                                    startApkDownload(apkUrl)
+                                }
+                                .setNegativeButton("Sonra", null)
+                                .show()
+                        }
+                    }
                 }
+            } catch (_: Exception) {
             }
-
-            override fun onReceivedError(
-                view: WebView?,
-                request: WebResourceRequest?,
-                error: WebResourceError?
-            ) {
-                super.onReceivedError(view, request, error)
-                if (request?.isForMainFrame == true) {
-                    tryNextOrPrompt()
-                }
-            }
-        }
-
-        // Önce varsa kaydedilmiş son çalışan adresi, yoksa kalıcı GitHub Pages adresini aç
-        val savedUrl = getSavedUrl()
-        if (!savedUrl.isNullOrBlank()) {
-            webView.loadUrl(savedUrl)
-        } else {
-            webView.loadUrl(defaultUrls[0])
         }
     }
 
-    private fun tryNextOrPrompt() {
-        if (currentUrlIndex < defaultUrls.size) {
-            val nextUrl = defaultUrls[currentUrlIndex]
-            currentUrlIndex++
-            webView.loadUrl(nextUrl)
-        } else {
-            showManualUrlDialog()
+    private fun startApkDownload(apkUrl: String) {
+        try {
+            val destFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "eymen-update.apk")
+            if (destFile.exists()) destFile.delete()
+
+            val request = DownloadManager.Request(Uri.parse(apkUrl))
+                .setTitle("Eymen TV & Radyo Güncelleniyor")
+                .setDescription("Yeni sürüm indiriliyor...")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationUri(Uri.fromFile(destFile))
+
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            downloadId = dm.enqueue(request)
+            Toast.makeText(this, "Güncelleme indiriliyor...", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "İndirme başlatılamadı: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun showManualUrlDialog() {
-        val input = EditText(this)
-        input.setText(getSavedUrl() ?: defaultUrls[0])
-        input.setSelection(input.text.length)
+    private fun installDownloadedApk() {
+        try {
+            val apkFile = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "eymen-update.apk")
+            if (!apkFile.exists()) return
 
-        AlertDialog.Builder(this)
-            .setTitle("Yayın Adresi Güncelle")
-            .setMessage("Ana adreslere ulaşılamadı. Güncel adresi girin (bir kez kaydedilir):")
-            .setView(input)
-            .setCancelable(false)
-            .setPositiveButton("KAYDET VE AÇ") { _, _ ->
-                val newUrl = input.text.toString().trim()
-                if (newUrl.isNotEmpty()) {
-                    saveUrl(newUrl)
-                    webView.loadUrl(newUrl)
-                    Toast.makeText(this, "Adres kaydedildi", Toast.LENGTH_SHORT).show()
-                }
+            val apkUri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                apkFile
+            )
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            .setNegativeButton("YENİLE") { _, _ ->
-                currentUrlIndex = 0
-                webView.loadUrl(defaultUrls[0])
-            }
-            .show()
+            startActivity(installIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Kurulum açılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
-    private fun saveUrl(url: String) {
-        getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-            .edit()
-            .putString(keySavedUrl, url)
-            .apply()
-    }
-
-    private fun getSavedUrl(): String? {
-        return getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-            .getString(keySavedUrl, null)
-    }
-
-    // Mi Box kumanda geri tuşu desteği
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
             webView.goBack()
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(downloadReceiver)
+        } catch (_: Exception) {
+        }
+        webView.destroy()
+        super.onDestroy()
     }
 }
