@@ -125,7 +125,7 @@ class NativeIptvActivity : Activity() {
             isFocusable = true
             isFocusableInTouchMode = true
             setTextColor(Color.WHITE)
-            background = focusBackground()
+            setBackground(focusBackground())
             setOnClickListener { action() }
         }
 
