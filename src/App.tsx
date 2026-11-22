@@ -167,37 +167,31 @@ const CATEGORY_LABELS: Record<MediaCategory, string> = {
 const THEME = {
   night: {
     bg: "#090d16",
-    surface: "rgba(18, 25, 40, 0.78)",
-    card: "rgba(26, 36, 56, 0.72)",
-    cardHover: "rgba(38, 52, 80, 0.92)",
+    surface: "rgba(18, 25, 40, 0.9)",
+    card: "rgba(26, 36, 56, 0.85)",
+    cardFocus: "rgba(42, 58, 90, 0.98)",
     text: "#f8fafc",
     muted: "#cbd5e1",
     accent: "#38bdf8",
     focus: "#facc15",
-    border: "rgba(148, 163, 184, 0.28)",
+    border: "rgba(148, 163, 184, 0.3)",
   },
   day: {
     bg: "#e2e8f0",
-    surface: "rgba(255, 255, 255, 0.82)",
-    card: "rgba(255, 255, 255, 0.76)",
-    cardHover: "rgba(241, 245, 249, 0.96)",
+    surface: "rgba(255, 255, 255, 0.92)",
+    card: "rgba(255, 255, 255, 0.88)",
+    cardFocus: "rgba(224, 242, 254, 0.98)",
     text: "#0f172a",
     muted: "#334155",
     accent: "#0284c7",
     focus: "#d97706",
-    border: "rgba(15, 23, 42, 0.18)",
+    border: "rgba(15, 23, 42, 0.2)",
   },
 };
 
 function BrandLogo({ accent }: { accent: string }) {
   return (
-    <svg
-      width="44"
-      height="44"
-      viewBox="0 0 64 64"
-      fill="none"
-      aria-hidden="true"
-    >
+    <svg width="42" height="42" viewBox="0 0 64 64" fill="none" aria-hidden="true">
       <rect width="64" height="64" rx="16" fill={accent} fillOpacity="0.18" />
       <rect
         x="11"
@@ -222,18 +216,30 @@ function BrandLogo({ accent }: { accent: string }) {
   );
 }
 
+type FocusTarget = {
+  column: "tv" | "radio";
+  index: number;
+};
+
 export function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const controllerRef = useRef<EymenStreamController | null>(null);
-  const cardRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const tvCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const radioCardRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const backupBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [activeCategory, setActiveCategory] = useState<MediaCategory>("tv");
   const [catalogs, setCatalogs] =
     useState<Record<MediaCategory, MediaItem[]>>(FALLBACK_CATALOG);
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
-  const [lastPlayedIndex, setLastPlayedIndex] = useState<number>(0);
-  const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const [focusTarget, setFocusTarget] = useState<FocusTarget>({
+    column: "tv",
+    index: 0,
+  });
+  const [lastPlayedTarget, setLastPlayedTarget] = useState<FocusTarget>({
+    column: "tv",
+    index: 0,
+  });
   const [statusMessage, setStatusMessage] = useState<string>(
     "Yayın seçmek için bir kart seçin"
   );
@@ -243,11 +249,14 @@ export function App() {
   const theme = THEME[themeMode];
   const isNight = themeMode === "night";
 
-  const focusCardAt = (idx: number) => {
-    const target = cardRefs.current[idx];
-    if (target) {
-      target.focus();
-      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const focusElement = (target: FocusTarget) => {
+    const pool =
+      target.column === "tv" ? tvCardRefs.current : radioCardRefs.current;
+    const clampedIdx = Math.max(0, Math.min(target.index, pool.length - 1));
+    const el = pool[clampedIdx];
+    if (el) {
+      el.focus({ preventScroll: false });
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
   };
 
@@ -273,18 +282,29 @@ export function App() {
     };
   }, []);
 
+  // İlk açılışta ve sekme değiştiğinde odağı güvenli kartta tut
   useEffect(() => {
     if (isPlayerOpen) return;
-    setFocusedIndex(0);
+    const initial: FocusTarget =
+      activeCategory === "radio"
+        ? { column: "radio", index: 0 }
+        : { column: "tv", index: 0 };
+    setFocusTarget(initial);
     const timer = window.setTimeout(() => {
-      focusCardAt(0);
-    }, 60);
+      focusElement(initial);
+    }, 50);
     return () => window.clearTimeout(timer);
   }, [activeCategory, catalogs, isPlayerOpen]);
 
-  const handleSelectItem = (item: MediaItem, idx: number) => {
+  const handleSelectItem = (
+    item: MediaItem,
+    column: "tv" | "radio",
+    index: number
+  ) => {
+    const currentTarget = { column, index };
     setSelectedItem(item);
-    setLastPlayedIndex(idx);
+    setFocusTarget(currentTarget);
+    setLastPlayedTarget(currentTarget);
     setIsPlayerOpen(true);
     setStatusMessage(`${item.title} hazırlanıyor...`);
 
@@ -305,30 +325,48 @@ export function App() {
     setStatusMessage("Oynatıcı kapatıldı");
 
     window.setTimeout(() => {
-      setFocusedIndex(lastPlayedIndex);
-      focusCardAt(lastPlayedIndex);
-    }, 60);
+      setFocusTarget(lastPlayedTarget);
+      focusElement(lastPlayedTarget);
+    }, 50);
   };
 
-  const handleGridKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const items = catalogs[activeCategory] || [];
-    if (!items.length) return;
+  // Sol (TV) ve Sağ (Radyo) sütunlar arasında D-Pad gezinmesi
+  const handleColumnKeyDown = (
+    e: React.KeyboardEvent<HTMLDivElement>,
+    column: "tv" | "radio",
+    index: number
+  ) => {
+    const tvLen = (catalogs.tv || []).length;
+    const radioLen = (catalogs.radio || []).length;
 
-    const cols = Math.max(
-      1,
-      Math.floor((e.currentTarget.clientWidth || 800) / 240)
-    );
-    let nextIdx = focusedIndex;
+    let next: FocusTarget | null = null;
 
-    if (e.key === "ArrowRight") nextIdx = Math.min(items.length - 1, focusedIndex + 1);
-    else if (e.key === "ArrowLeft") nextIdx = Math.max(0, focusedIndex - 1);
-    else if (e.key === "ArrowDown") nextIdx = Math.min(items.length - 1, focusedIndex + cols);
-    else if (e.key === "ArrowUp") nextIdx = Math.max(0, focusedIndex - cols);
-    else return;
+    if (e.key === "ArrowDown") {
+      if (column === "tv" && index + 1 < tvLen) {
+        next = { column: "tv", index: index + 1 };
+      } else if (column === "radio" && index + 1 < radioLen) {
+        next = { column: "radio", index: index + 1 };
+      }
+    } else if (e.key === "ArrowUp") {
+      if (index - 1 >= 0) {
+        next = { column, index: index - 1 };
+      }
+    } else if (e.key === "ArrowRight") {
+      if (column === "tv" && radioLen > 0) {
+        next = { column: "radio", index: Math.min(index, radioLen - 1) };
+      }
+    } else if (e.key === "ArrowLeft") {
+      if (column === "radio" && tvLen > 0) {
+        next = { column: "tv", index: Math.min(index, tvLen - 1) };
+      }
+    }
 
-    e.preventDefault();
-    setFocusedIndex(nextIdx);
-    focusCardAt(nextIdx);
+    if (next) {
+      e.preventDefault();
+      e.stopPropagation();
+      setFocusTarget(next);
+      focusElement(next);
+    }
   };
 
   const tvItems = catalogs.tv || [];
@@ -351,9 +389,8 @@ export function App() {
       <style>{`
         button:focus,
         button:focus-visible {
-          outline: 3px solid ${theme.focus} !important;
+          outline: 4px solid ${theme.focus} !important;
           outline-offset: 2px !important;
-          transform: scale(1.02);
         }
       `}</style>
 
@@ -366,7 +403,6 @@ export function App() {
           gap: "12px",
           padding: "14px 20px",
           backgroundColor: theme.surface,
-          backdropFilter: "blur(12px)",
           borderBottom: `1px solid ${theme.border}`,
           position: "sticky",
           top: 0,
@@ -429,9 +465,6 @@ export function App() {
       </header>
 
       <main
-        role="region"
-        aria-label="Yayın Listeleri"
-        onKeyDown={handleGridKeyDown}
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
@@ -444,57 +477,75 @@ export function App() {
         <section
           style={{
             backgroundColor: theme.surface,
-            backdropFilter: "blur(10px)",
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
           }}
         >
-          <h2 style={{ margin: "0 0 14px", fontSize: "18px", fontWeight: 900, color: theme.accent }}>
+          <h2
+            style={{
+              margin: "0 0 14px",
+              fontSize: "18px",
+              fontWeight: 900,
+              color: theme.accent,
+            }}
+          >
             📺 TV Kanalları (Sol)
           </h2>
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
-              gap: "12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
               maxHeight: "65vh",
               overflowY: "auto",
               padding: "4px",
             }}
           >
-            {tvItems.map((item, idx) => (
-              <button
-                key={item.id}
-                ref={(el) => {
-                  cardRefs.current[idx] = el;
-                }}
-                type="button"
-                onFocus={() => setFocusedIndex(idx)}
-                onClick={() => handleSelectItem(item, idx)}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: "6px",
-                  padding: "14px",
-                  borderRadius: "12px",
-                  border: `1px solid ${theme.border}`,
-                  backgroundColor:
-                    focusedIndex === idx ? theme.cardHover : theme.card,
-                  color: theme.text,
-                  textAlign: "left",
-                  cursor: "pointer",
-                }}
-              >
-                <strong style={{ fontSize: "15px", fontWeight: 800 }}>
-                  {item.title}
-                </strong>
-                <span style={{ fontSize: "13px", color: theme.muted, fontWeight: 600 }}>
-                  {item.group || "TV"} • {item.sources.length} kaynak
-                </span>
-              </button>
-            ))}
+            {tvItems.map((item, idx) => {
+              const isFocused =
+                focusTarget.column === "tv" && focusTarget.index === idx;
+              return (
+                <button
+                  key={item.id}
+                  ref={(el) => {
+                    tvCardRefs.current[idx] = el;
+                  }}
+                  type="button"
+                  onFocus={() => setFocusTarget({ column: "tv", index: idx })}
+                  onKeyDown={(e) => handleColumnKeyDown(e, "tv", idx)}
+                  onClick={() => handleSelectItem(item, "tv", idx)}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: "4px",
+                    padding: "14px 16px",
+                    borderRadius: "12px",
+                    border: isFocused
+                      ? `2px solid ${theme.focus}`
+                      : `1px solid ${theme.border}`,
+                    backgroundColor: isFocused ? theme.cardFocus : theme.card,
+                    color: theme.text,
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                >
+                  <strong style={{ fontSize: "16px", fontWeight: 800 }}>
+                    {item.title}
+                  </strong>
+                  <span
+                    style={{
+                      fontSize: "13px",
+                      color: theme.muted,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {item.group || "TV"} • {item.sources.length} kaynak
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </section>
 
@@ -502,55 +553,70 @@ export function App() {
         <section
           style={{
             backgroundColor: theme.surface,
-            backdropFilter: "blur(10px)",
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
           }}
         >
-          <h2 style={{ margin: "0 0 14px", fontSize: "18px", fontWeight: 900, color: theme.accent }}>
+          <h2
+            style={{
+              margin: "0 0 14px",
+              fontSize: "18px",
+              fontWeight: 900,
+              color: theme.accent,
+            }}
+          >
             📻 Radyo İstasyonları (Sağ)
           </h2>
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
-              gap: "12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
               maxHeight: "65vh",
               overflowY: "auto",
               padding: "4px",
             }}
           >
             {radioItems.map((item, idx) => {
-              const globalIdx = tvItems.length + idx;
+              const isFocused =
+                focusTarget.column === "radio" && focusTarget.index === idx;
               return (
                 <button
                   key={item.id}
                   ref={(el) => {
-                    cardRefs.current[globalIdx] = el;
+                    radioCardRefs.current[idx] = el;
                   }}
                   type="button"
-                  onFocus={() => setFocusedIndex(globalIdx)}
-                  onClick={() => handleSelectItem(item, globalIdx)}
+                  onFocus={() => setFocusTarget({ column: "radio", index: idx })}
+                  onKeyDown={(e) => handleColumnKeyDown(e, "radio", idx)}
+                  onClick={() => handleSelectItem(item, "radio", idx)}
                   style={{
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "flex-start",
-                    gap: "6px",
-                    padding: "14px",
+                    gap: "4px",
+                    padding: "14px 16px",
                     borderRadius: "12px",
-                    border: `1px solid ${theme.border}`,
-                    backgroundColor:
-                      focusedIndex === globalIdx ? theme.cardHover : theme.card,
+                    border: isFocused
+                      ? `2px solid ${theme.focus}`
+                      : `1px solid ${theme.border}`,
+                    backgroundColor: isFocused ? theme.cardFocus : theme.card,
                     color: theme.text,
                     textAlign: "left",
                     cursor: "pointer",
                   }}
                 >
-                  <strong style={{ fontSize: "15px", fontWeight: 800 }}>
+                  <strong style={{ fontSize: "16px", fontWeight: 800 }}>
                     {item.title}
                   </strong>
-                  <span style={{ fontSize: "13px", color: theme.muted, fontWeight: 600 }}>
+                  <span
+                    style={{
+                      fontSize: "13px",
+                      color: theme.muted,
+                      fontWeight: 600,
+                    }}
+                  >
                     {item.group || "Radyo"} • {item.sources.length} kaynak
                   </span>
                 </button>
@@ -560,19 +626,24 @@ export function App() {
         </section>
       </main>
 
-      {/* Film veya Dizi Sekmesi Seçildiğinde Alt/Ek Bölüm */}
       {extraItems.length > 0 && (
         <section
           style={{
             margin: "0 20px 20px",
             backgroundColor: theme.surface,
-            backdropFilter: "blur(10px)",
             border: `1px solid ${theme.border}`,
             borderRadius: "16px",
             padding: "16px",
           }}
         >
-          <h2 style={{ margin: "0 0 14px", fontSize: "18px", fontWeight: 900, color: theme.accent }}>
+          <h2
+            style={{
+              margin: "0 0 14px",
+              fontSize: "18px",
+              fontWeight: 900,
+              color: theme.accent,
+            }}
+          >
             {activeCategory === "movie" ? "🎬 Filmler" : "🎞️ Diziler"}
           </h2>
           <div
@@ -586,7 +657,7 @@ export function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => handleSelectItem(item, idx)}
+                onClick={() => handleSelectItem(item, "tv", idx)}
                 style={{
                   display: "flex",
                   flexDirection: "column",
@@ -601,8 +672,16 @@ export function App() {
                   cursor: "pointer",
                 }}
               >
-                <strong style={{ fontSize: "15px", fontWeight: 800 }}>{item.title}</strong>
-                <span style={{ fontSize: "13px", color: theme.muted, fontWeight: 600 }}>
+                <strong style={{ fontSize: "15px", fontWeight: 800 }}>
+                  {item.title}
+                </strong>
+                <span
+                  style={{
+                    fontSize: "13px",
+                    color: theme.muted,
+                    fontWeight: 600,
+                  }}
+                >
                   {item.group || CATEGORY_LABELS[item.category]}
                 </span>
               </button>
@@ -611,7 +690,6 @@ export function App() {
         </section>
       )}
 
-      {/* Oynatıcı Katmanı (video etiketi her zaman DOM'da hazır) */}
       <section
         aria-label="Medya Oynatıcı"
         style={{
@@ -640,14 +718,15 @@ export function App() {
             gap: "12px",
             padding: "14px 20px",
             backgroundColor: theme.surface,
-            backdropFilter: "blur(12px)",
           }}
         >
           <div>
             <div style={{ fontWeight: 900, fontSize: "17px" }}>
               {selectedItem?.title || "Yayın"}
             </div>
-            <div style={{ fontSize: "14px", color: theme.focus, fontWeight: 700 }}>
+            <div
+              style={{ fontSize: "14px", color: theme.focus, fontWeight: 700 }}
+            >
               {statusMessage}
             </div>
           </div>
