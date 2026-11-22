@@ -16,10 +16,12 @@ jobs:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: Node.js kur
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+      - name: Node.js ve npm kur
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nodejs npm
+          node -v
+          npm -v
 
       - name: Web bağımlılıklarını kur ve derle
         run: |
