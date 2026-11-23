@@ -263,9 +263,14 @@ export class EymenStreamController {
   private currentItem: MediaItem | null = null;
   private sourceIndex = 0;
   private timeoutId: number | null = null;
+  private watchdogId: number | null = null;
+  private lastProgressAt = 0;
+  private lastProgressTime = 0;
+  private recoveryCount = 0;
   private attemptToken = 0;
   private destroyed = false;
   private readonly timeoutMs: number;
+  private readonly maxRecoveriesPerSource: number;
   private readonly onStatus?: (event: StreamStatusEvent) => void;
 
   constructor(
@@ -273,8 +278,12 @@ export class EymenStreamController {
     options: EymenStreamControllerOptions = {}
   ) {
     this.timeoutMs = options.failoverTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxRecoveriesPerSource = 2;
     this.onStatus = options.onStatus;
     this.media.addEventListener("playing", this.handlePlaying);
+    this.media.addEventListener("timeupdate", this.handleTimeUpdate);
+    this.media.addEventListener("waiting", this.handleStall);
+    this.media.addEventListener("stalled", this.handleStall);
     this.media.addEventListener("error", this.handleMediaError);
   }
 
@@ -285,6 +294,8 @@ export class EymenStreamController {
   private clearPlayback(): void {
     if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
     this.timeoutId = null;
+    if (this.watchdogId !== null) window.clearInterval(this.watchdogId);
+    this.watchdogId = null;
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
@@ -302,6 +313,7 @@ export class EymenStreamController {
     }
     this.currentItem = item;
     this.sourceIndex = Math.max(0, Math.min(startIndex, item.sources.length - 1));
+    this.recoveryCount = 0;
     this.tryCurrentSource(false);
   }
 
@@ -316,6 +328,8 @@ export class EymenStreamController {
 
     this.clearPlayback();
     const token = ++this.attemptToken;
+    this.lastProgressAt = Date.now();
+    this.lastProgressTime = this.media.currentTime || 0;
     this.emit({
       state: isFailover ? "failover" : "loading",
       message: isFailover ? `${source.label} deneniyor...` : `${item.title} yükleniyor...`,
@@ -347,7 +361,12 @@ export class EymenStreamController {
         });
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (token === this.attemptToken && data.fatal) this.moveToNextSource();
+        if (token !== this.attemptToken || !data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR || data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          this.recoverCurrentSource(data.details || "HLS oynatma hatası");
+        } else {
+          this.moveToNextSource();
+        }
       });
       hls.loadSource(source.url);
       hls.attachMedia(this.media);
@@ -367,6 +386,10 @@ export class EymenStreamController {
   private readonly handlePlaying = (): void => {
     if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
     this.timeoutId = null;
+    this.recoveryCount = 0;
+    this.lastProgressAt = Date.now();
+    this.lastProgressTime = this.media.currentTime || 0;
+    if (this.watchdogId === null) this.watchdogId = window.setInterval(() => this.checkPlaybackHealth(), 5000);
     this.emit({
       state: "playing",
       message: this.currentItem ? `${this.currentItem.title} yayında` : "Yayın oynatılıyor",
@@ -374,9 +397,54 @@ export class EymenStreamController {
     });
   };
 
-  private readonly handleMediaError = (): void => {
-    if (!this.hls && this.currentItem) this.moveToNextSource();
+  private readonly handleTimeUpdate = (): void => {
+    const current = this.media.currentTime || 0;
+    if (current > this.lastProgressTime + 0.15) {
+      this.lastProgressTime = current;
+      this.lastProgressAt = Date.now();
+    }
   };
+
+  private readonly handleStall = (): void => {
+    if (!this.currentItem || this.destroyed) return;
+    if (Date.now() - this.lastProgressAt > 12000) this.recoverCurrentSource("Yayın akışı durdu");
+  };
+
+  private readonly handleMediaError = (): void => {
+    if (this.currentItem) this.recoverCurrentSource("Video oynatma hatası");
+  };
+
+  private checkPlaybackHealth(): void {
+    if (!this.currentItem || this.destroyed || this.media.paused) return;
+    if (Date.now() - this.lastProgressAt >= 20000) this.recoverCurrentSource("Yayın 20 saniyedir ilerlemiyor");
+  }
+
+  private recoverCurrentSource(reason: string): void {
+    if (!this.currentItem || this.destroyed) return;
+    if (this.recoveryCount >= this.maxRecoveriesPerSource) {
+      this.moveToNextSource();
+      return;
+    }
+    this.recoveryCount += 1;
+    const source = this.currentItem.sources[this.sourceIndex];
+    this.emit({
+      state: "failover",
+      message: reason + ". Yayın yeniden bağlanıyor (" + this.recoveryCount + "/" + this.maxRecoveriesPerSource + ")...",
+      source,
+    });
+    const position = Number.isFinite(this.media.currentTime) ? this.media.currentTime : 0;
+    if (this.hls) {
+      try {
+        this.hls.startLoad(position);
+        this.hls.recoverMediaError();
+      } catch {
+        this.tryCurrentSource(true);
+      }
+    } else {
+      this.tryCurrentSource(true);
+    }
+    this.lastProgressAt = Date.now();
+  }
 
   private moveToNextSource(): void {
     const item = this.currentItem;
@@ -394,6 +462,7 @@ export class EymenStreamController {
     const item = this.currentItem;
     if (!item || item.sources.length < 2 || this.destroyed) return;
     this.sourceIndex = (this.sourceIndex + 1) % item.sources.length;
+    this.recoveryCount = 0;
     this.tryCurrentSource(true);
   }
 
@@ -410,6 +479,9 @@ export class EymenStreamController {
     this.stop();
     this.destroyed = true;
     this.media.removeEventListener("playing", this.handlePlaying);
+    this.media.removeEventListener("timeupdate", this.handleTimeUpdate);
+    this.media.removeEventListener("waiting", this.handleStall);
+    this.media.removeEventListener("stalled", this.handleStall);
     this.media.removeEventListener("error", this.handleMediaError);
   }
 }
