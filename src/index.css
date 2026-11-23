@@ -235,3 +235,65 @@ button { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion:reduce) {
   * { animation-duration:.01ms!important;transition-duration:.01ms!important; }
 }
+
+/* Mi Box / Android TV Remote & Keyboard High-Visibility Focus Indicator */
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+[data-focus-inset="true"]:focus,
+[data-focus-inset="true"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+body.tv-remote-active *:focus {
+  outline: 3px solid var(--accent) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 38%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.55) !important;
+  position: relative;
+  z-index: 10;
+}
+
+body.tv-remote-active [data-focus-inset="true"]:focus {
+  outline: 3px solid var(--accent) !important;
+  outline-offset: -3px !important;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.65), 0 0 0 4px color-mix(in srgb, var(--accent) 38%, transparent) !important;
+  position: relative;
+  z-index: 10;
+}
+
+/* Ergonomic Touch Targets on Mobile & Tablet */
+@media (pointer: coarse) {
+  button,
+  [role="button"] {
+    min-height: 44px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .touch-compact {
+    min-height: 36px;
+  }
+}
+
+/* Prevent accidental horizontal overscroll & 300ms tap delay on TV / Mobile */
+html,
+body {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-scroll-y {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.touch-scroll-x {
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}

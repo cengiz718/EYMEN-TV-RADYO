@@ -5,12 +5,14 @@ import {
   Maximize,
   Minimize,
   Maximize2,
+  RotateCw,
   Tv,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react';
-import type { AspectMode, Channel } from '../types/channel';
+import type { AspectMode, BufferPreset, Channel } from '../types/channel';
+import { buildHlsConfig } from '../utils/hlsConfig';
 
 interface MultiScreenTileProps {
   index: number;
@@ -18,6 +20,9 @@ interface MultiScreenTileProps {
   isSelectedSlot: boolean;
   isAudioActive: boolean;
   aspectMode: AspectMode;
+  lowRamMode?: boolean;
+  acceleratedPlaybackMode?: boolean;
+  bufferPreset?: BufferPreset;
   onSelectSlot: () => void;
   onSetAudioSlot: () => void;
   onFocusSingle: () => void;
@@ -29,6 +34,9 @@ function MultiScreenTile({
   isSelectedSlot,
   isAudioActive,
   aspectMode,
+  lowRamMode = true,
+  acceleratedPlaybackMode = true,
+  bufferPreset = 'balanced',
   onSelectSlot,
   onSetAudioSlot,
   onFocusSingle,
@@ -37,6 +45,13 @@ function MultiScreenTile({
   const hlsRef = useRef<Hls | null>(null);
   const [isBuffering, setIsBuffering] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
+  const acceleratedRef = useRef(acceleratedPlaybackMode);
+  acceleratedRef.current = acceleratedPlaybackMode;
+  const bufferPresetRef = useRef(bufferPreset);
+  bufferPresetRef.current = bufferPreset;
+  const lowRamRef = useRef(lowRamMode);
+  lowRamRef.current = lowRamMode;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -82,24 +97,33 @@ function MultiScreenTile({
     };
 
     const lowerStream = channel.streamUrl.toLowerCase();
+    const cleanLower = lowerStream.split('?')[0].split('#')[0];
     const looksLikeHls =
+      cleanLower.endsWith('.m3u8') ||
+      cleanLower.endsWith('.m3u') ||
       lowerStream.includes('.m3u8') ||
-      lowerStream.includes('hls') ||
+      lowerStream.includes('/hls/') ||
       lowerStream.includes('workers.dev') ||
       channel.codec === 'HLS';
+    const isKnownDirectFile =
+      /\.(mp4|mkv|webm|mov|avi|mp3|aac|ogg|flac|wav|opus|ts)$/i.test(cleanLower);
+    const isDirectStream =
+      (channel.isRadio && !looksLikeHls) ||
+      (Boolean(channel.isVod) && !looksLikeHls) ||
+      (isKnownDirectFile && !looksLikeHls);
 
-    if (channel.isRadio && !looksLikeHls) {
+    if (isDirectStream) {
       video.src = proxiedUrl;
       void attemptPlay();
     } else if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 20,
-        manifestLoadingTimeOut: 15000,
-        levelLoadingTimeOut: 15000,
-        fragLoadingTimeOut: 20000,
-      });
+      const hls = new Hls(
+        buildHlsConfig({
+          acceleratedPlaybackMode: acceleratedRef.current,
+          bufferPreset: bufferPresetRef.current,
+          lowRamMode: lowRamRef.current,
+          isMultiScreen: true,
+        })
+      );
       hlsRef.current = hls;
       hls.loadSource(proxiedUrl);
       hls.attachMedia(video);
@@ -107,10 +131,31 @@ function MultiScreenTile({
         setHasError(false);
         void attemptPlay();
       });
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        setIsBuffering(false);
+      });
       hls.on(Hls.Events.ERROR, (_ev, data) => {
-        if (!data.fatal) return;
+        if (!data.fatal) {
+          if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+            if (hls.levels.length > 1) hls.nextLevel = 0;
+            hls.startLoad();
+          }
+          return;
+        }
+        if (
+          data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
+          data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
+        ) {
+          hls.destroy();
+          hlsRef.current = null;
+          video.src = proxiedUrl;
+          void attemptPlay();
+          return;
+        }
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hls.recoverMediaError();
+        } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
         } else {
           setHasError(true);
           setIsBuffering(false);
@@ -127,10 +172,25 @@ function MultiScreenTile({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      video.pause();
       video.removeAttribute('src');
       video.load();
     };
-  }, [channel]);
+  }, [channel, retryTick]);
+
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    Object.assign(
+      hls.config,
+      buildHlsConfig({
+        acceleratedPlaybackMode,
+        bufferPreset,
+        lowRamMode,
+        isMultiScreen: true,
+      })
+    );
+  }, [acceleratedPlaybackMode, bufferPreset, lowRamMode]);
 
   const objectFitClass =
     aspectMode === 'fit'
@@ -145,12 +205,12 @@ function MultiScreenTile({
       tabIndex={0}
       onClick={onSelectSlot}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Select' || e.key === 'DPadCenter') {
           e.preventDefault();
           onSelectSlot();
         }
       }}
-      className={`relative bg-black overflow-hidden select-none cursor-pointer focus:outline-none transition-colors ${
+      className={`relative bg-black overflow-hidden select-none touch-manipulation cursor-pointer focus:outline-none transition-colors ${
         isSelectedSlot
           ? 'ring-2 ring-inset ring-[var(--accent)]'
           : 'ring-1 ring-inset ring-[var(--border)] hover:ring-white/30'
@@ -182,10 +242,21 @@ function MultiScreenTile({
           )}
 
           {hasError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/75 p-2 text-center">
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/80 p-2 text-center"
+            >
               <span className="text-[11px] font-medium text-[var(--live)]">
                 Yayın açılamadı
               </span>
+              <button
+                type="button"
+                onClick={() => setRetryTick((t) => t + 1)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] text-[10px] font-extrabold hover:bg-[var(--accent-hover)]"
+              >
+                <RotateCw className="w-3 h-3" />
+                <span>Tekrar</span>
+              </button>
             </div>
           )}
         </>
@@ -230,25 +301,25 @@ function MultiScreenTile({
                 type="button"
                 onClick={onSetAudioSlot}
                 title={isAudioActive ? 'Ses Bu Ekranda' : 'Sesi Bu Ekrana Al'}
-                className={`p-1.5 rounded text-xs transition-colors focus:outline-none ${
+                className={`touch-compact min-w-[34px] min-h-[34px] flex items-center justify-center p-1.5 rounded-lg text-xs transition-colors focus:outline-none ${
                   isAudioActive
                     ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
-                    : 'bg-black/60 text-white/80 hover:text-white'
+                    : 'bg-black/65 text-white/85 hover:text-white'
                 }`}
               >
                 {isAudioActive ? (
-                  <Volume2 className="w-3.5 h-3.5" />
+                  <Volume2 className="w-4 h-4" />
                 ) : (
-                  <VolumeX className="w-3.5 h-3.5" />
+                  <VolumeX className="w-4 h-4" />
                 )}
               </button>
               <button
                 type="button"
                 onClick={onFocusSingle}
                 title="Tek Ekranda Büyüt"
-                className="p-1.5 rounded bg-black/60 text-white/85 hover:text-white focus:outline-none"
+                className="touch-compact min-w-[34px] min-h-[34px] flex items-center justify-center p-1.5 rounded-lg bg-black/65 text-white/85 hover:text-white focus:outline-none"
               >
-                <Maximize2 className="w-3.5 h-3.5" />
+                <Maximize2 className="w-4 h-4" />
               </button>
             </>
           )}
@@ -265,6 +336,9 @@ interface MultiScreenGridProps {
   audioSlotIndex: number;
   aspectMode: AspectMode;
   isFullscreen: boolean;
+  lowRamMode?: boolean;
+  acceleratedPlaybackMode?: boolean;
+  bufferPreset?: BufferPreset;
   onSelectSlot: (idx: number) => void;
   onSetAudioSlot: (idx: number) => void;
   onFocusSingle: (idx: number) => void;
@@ -280,6 +354,9 @@ export function MultiScreenGrid({
   audioSlotIndex,
   aspectMode,
   isFullscreen,
+  lowRamMode = true,
+  acceleratedPlaybackMode = true,
+  bufferPreset = 'balanced',
   onSelectSlot,
   onSetAudioSlot,
   onFocusSingle,
@@ -289,10 +366,34 @@ export function MultiScreenGrid({
 }: MultiScreenGridProps) {
   const visibleSlots = slots.slice(0, layout);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key >= '1' && e.key <= String(layout)) {
+        const idx = Number(e.key) - 1;
+        onSelectSlot(idx);
+        onSetAudioSlot(idx);
+      } else if (isFullscreen && (e.key === 'Escape' || e.key === 'GoBack' || e.key === 'BrowserBack')) {
+        e.preventDefault();
+        onToggleFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [layout, isFullscreen, onSelectSlot, onSetAudioSlot, onToggleFullscreen]);
+
   return (
     <div
-      className={`flex flex-col bg-black ${
-        isFullscreen ? 'fixed inset-0 z-50 w-screen h-dvh' : 'w-full aspect-video lg:aspect-auto lg:h-full'
+      className={`flex flex-col bg-black touch-manipulation ${
+        isFullscreen ? 'fixed inset-0 z-50 w-screen h-dvh' : 'w-full h-full'
       }`}
     >
       {/* Multi-Screen Control Strip */}
@@ -349,6 +450,9 @@ export function MultiScreenGrid({
             isSelectedSlot={idx === activeSlotIndex}
             isAudioActive={idx === audioSlotIndex}
             aspectMode={aspectMode}
+            lowRamMode={lowRamMode}
+            acceleratedPlaybackMode={acceleratedPlaybackMode}
+            bufferPreset={bufferPreset}
             onSelectSlot={() => onSelectSlot(idx)}
             onSetAudioSlot={() => onSetAudioSlot(idx)}
             onFocusSingle={() => onFocusSingle(idx)}

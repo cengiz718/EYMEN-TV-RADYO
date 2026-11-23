@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ChevronRight,
   Clapperboard,
@@ -6,6 +6,7 @@ import {
   Heart,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Sparkles,
   Tv2,
@@ -20,6 +21,12 @@ import type {
 } from '../types/channel';
 import { vodItemToChannel } from '../utils/vodParser';
 
+interface VodAiResponse {
+  addedCount: number;
+  summary: string;
+  webSources?: Array<{ title: string; uri: string }>;
+}
+
 interface VodSectionTabProps {
   vodItems: VodItem[];
   xtreamSeries: XtreamSeriesEntry[];
@@ -28,11 +35,15 @@ interface VodSectionTabProps {
   favoriteIds: Set<string>;
   currentChannel: Channel | null;
   cinemaLiveCount: number;
+  isLoadingVod?: boolean;
+  isAiDiscoveringVod?: boolean;
   onPlayVodItem: (item: VodItem) => void;
   onPlayEpisodeChannel: (ch: Channel) => void;
   onToggleFavorite: (ch: Channel) => void;
   onOpenImportModal: () => void;
   onExtractCinemaFromLive: () => void;
+  onRefreshVodCatalog?: () => Promise<void>;
+  onAiDiscoverVod?: (topic?: string) => Promise<VodAiResponse>;
 }
 
 type VodKindFilter = 'all' | 'movie' | 'series' | 'resume';
@@ -85,22 +96,32 @@ export function VodSectionTab({
   favoriteIds,
   currentChannel,
   cinemaLiveCount,
+  isLoadingVod = false,
+  isAiDiscoveringVod = false,
   onPlayVodItem,
   onPlayEpisodeChannel,
   onToggleFavorite,
   onOpenImportModal,
   onExtractCinemaFromLive,
+  onRefreshVodCatalog,
+  onAiDiscoverVod,
 }: VodSectionTabProps) {
   const [kindFilter, setKindFilter] = useState<VodKindFilter>('all');
   const [selectedAutoCat, setSelectedAutoCat] = useState<string>('Tümü');
   const [query, setQuery] = useState('');
   const [visibleLimit, setVisibleLimit] = useState(60);
+  const [aiStatus, setAiStatus] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // Xtream series episode drawer state
   const [activeSeries, setActiveSeries] = useState<XtreamSeriesEntry | null>(null);
   const [episodes, setEpisodes] = useState<SeriesEpisodeDto[]>([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [episodesError, setEpisodesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setVisibleLimit(60);
+  }, [kindFilter, selectedAutoCat, query]);
 
   // Combine M3U VOD items + Xtream Series entries into a unified browseable list
   const unifiedEntries = useMemo(() => {
@@ -113,6 +134,7 @@ export function VodSectionTab({
       autoCategory: item.autoCategory,
       year: item.year,
       seasonEpisode: item.seasonEpisode,
+      qualityLabel: item.qualityLabel,
       vodItem: item,
       seriesEntry: null as XtreamSeriesEntry | null,
     }));
@@ -126,6 +148,7 @@ export function VodSectionTab({
       autoCategory: s.category || 'Diziler',
       year: s.year,
       seasonEpisode: undefined,
+      qualityLabel: undefined,
       vodItem: null as VodItem | null,
       seriesEntry: s,
     }));
@@ -201,27 +224,69 @@ export function VodSectionTab({
     }
   };
 
+  const triggerAiVodSearch = async (topic?: string) => {
+    if (!onAiDiscoverVod) return;
+    setAiError(null);
+    setAiStatus(null);
+    try {
+      const res = await onAiDiscoverVod(topic?.trim() || undefined);
+      setAiStatus(res.summary);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI film/dizi taraması başarısız.');
+    }
+  };
+
   if (unifiedEntries.length === 0) {
     return (
       <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-6 text-center">
         <div className="w-12 h-12 rounded-2xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center mb-3">
-          <Film className="w-6 h-6 text-[var(--accent)]" />
+          {isLoadingVod || isAiDiscoveringVod ? (
+            <div className="w-6 h-6 rounded-full border-2 border-[var(--accent)]/30 border-t-[var(--accent)] animate-spin" />
+          ) : (
+            <Film className="w-6 h-6 text-[var(--accent)]" />
+          )}
         </div>
         <h2 className="text-sm font-extrabold text-[var(--ink)]">
           Film &amp; Dizi Arşivi
         </h2>
         <p className="mt-1.5 text-xs text-[var(--muted)] max-w-xs leading-relaxed">
-          Kendi Film / Dizi M3U bağlantınızı, dosyanızı veya Xtream hesabınızı ekleyin. Tüm türler ve sezon kategorileri otomatik oluşturulur.
+          {isLoadingVod
+            ? 'Film & dizi bağlantıları yükleniyor ve kategorilere ayrılıyor...'
+            : 'Yapay zeka web film/dizi arşivlerini tarayıp kategorilere ayırabilir veya kendi M3U / Xtream listenizi ekleyebilirsiniz.'}
         </p>
 
         <div className="mt-4 flex flex-col gap-2 w-full max-w-xs">
+          {onAiDiscoverVod && (
+            <button
+              type="button"
+              disabled={isAiDiscoveringVod}
+              onClick={() => void triggerAiVodSearch()}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-bold hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              <Sparkles className={`w-4 h-4 ${isAiDiscoveringVod ? 'animate-spin' : ''}`} />
+              <span>{isAiDiscoveringVod ? 'AI Film & Dizi Arıyor...' : 'AI ile Webden Film & Dizi Çek'}</span>
+            </button>
+          )}
+
+          {onRefreshVodCatalog && (
+            <button
+              type="button"
+              disabled={isLoadingVod}
+              onClick={() => void onRefreshVodCatalog()}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] text-xs font-semibold hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 text-[var(--accent)] ${isLoadingVod ? 'animate-spin' : ''}`} />
+              <span>Kataloğu Yenile</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onOpenImportModal}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-bold hover:bg-[var(--accent-hover)]"
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] text-xs font-semibold hover:border-[var(--accent)]"
           >
-            <Plus className="w-4 h-4" />
-            <span>Film / Dizi Listesi Ekle</span>
+            <Plus className="w-4 h-4 text-[var(--accent)]" />
+            <span>M3U / Xtream Listesi Ekle</span>
           </button>
 
           {cinemaLiveCount > 0 && (
@@ -244,7 +309,7 @@ export function VodSectionTab({
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
       {/* Top Action Strip */}
-      <div className="shrink-0 px-3 pt-2.5 pb-2 flex items-center justify-between gap-2">
+      <div className="shrink-0 px-3 pt-2.5 pb-2 flex items-center justify-between gap-1.5">
         <div className="flex items-center gap-2 min-w-0">
           <Film className="w-4 h-4 text-[var(--accent)] shrink-0" />
           <span className="text-xs font-bold text-[var(--ink)] truncate">
@@ -255,15 +320,58 @@ export function VodSectionTab({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenImportModal}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] text-[11px] font-bold hover:bg-[var(--accent-hover)] whitespace-nowrap"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Liste Ekle</span>
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {onAiDiscoverVod && (
+            <button
+              type="button"
+              disabled={isAiDiscoveringVod}
+              onClick={() => void triggerAiVodSearch(query)}
+              title="Yapay Zeka ile Sürekli Yeni Film/Dizi Çek ve Bağla"
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--accent)]/60 text-[var(--accent)] text-[11px] font-bold hover:bg-[var(--surface-elevated)] disabled:opacity-50 whitespace-nowrap"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${isAiDiscoveringVod ? 'animate-spin' : ''}`} />
+              <span>{isAiDiscoveringVod ? 'Arıyor...' : 'AI Çek'}</span>
+            </button>
+          )}
+          {onRefreshVodCatalog && (
+            <button
+              type="button"
+              disabled={isLoadingVod}
+              onClick={() => void onRefreshVodCatalog()}
+              title="Film & Dizi Kataloğunu Yenile"
+              className="p-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--accent)] disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingVod ? 'animate-spin' : ''}`} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpenImportModal}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] text-[11px] font-bold hover:bg-[var(--accent-hover)] whitespace-nowrap"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Liste Ekle</span>
+          </button>
+        </div>
       </div>
+
+      {(aiStatus || aiError) && (
+        <div className="mx-3 mb-2 px-2.5 py-1.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-between gap-2 text-[11px]">
+          <span className={aiError ? 'text-[var(--live)] truncate' : 'text-[var(--accent)] truncate'}>
+            {aiError || aiStatus}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setAiError(null);
+              setAiStatus(null);
+            }}
+            className="text-[var(--muted)] hover:text-[var(--ink)] shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Type Filter Segmented Control */}
       <div className="shrink-0 px-3 pb-2">
@@ -322,15 +430,16 @@ export function VodSectionTab({
       </div>
 
       {/* Automatic Categories Bar (Generated from list) */}
-      <div className="shrink-0 flex items-center gap-1.5 px-3 pb-2 overflow-x-auto">
+      <div className="shrink-0 flex items-center gap-1.5 px-3 pb-2 overflow-x-auto touch-scroll-x">
         {autoCategories.map((cat) => {
           const active = cat.name === selectedAutoCat;
           return (
             <button
               key={cat.name}
               type="button"
+              data-focus-inset="true"
               onClick={() => setSelectedAutoCat(cat.name)}
-              className={`shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] transition-colors ${
+              className={`touch-compact shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] transition-colors ${
                 active
                   ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
                   : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
@@ -354,7 +463,7 @@ export function VodSectionTab({
             setVisibleLimit((prev) => Math.min(prev + 60, filtered.length));
           }
         }}
-        className="flex-1 min-h-0 overflow-y-auto px-3 pb-4"
+        className="flex-1 min-h-0 overflow-y-auto touch-scroll-y px-3 pb-4"
       >
         <div className="grid grid-cols-2 gap-2.5">
           {filtered.slice(0, visibleLimit).map((entry) => {
@@ -371,6 +480,8 @@ export function VodSectionTab({
                 key={entry.id}
                 role="button"
                 tabIndex={0}
+                data-focus-inset="true"
+                data-vod-card={entry.id}
                 onClick={() => {
                   if (entry.kind === 'vod' && entry.vodItem) {
                     onPlayVodItem(entry.vodItem);
@@ -388,7 +499,7 @@ export function VodSectionTab({
                     }
                   }
                 }}
-                className={`group rounded-xl border overflow-hidden cursor-pointer select-none transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                className={`group rounded-xl border overflow-hidden cursor-pointer select-none touch-manipulation transition-colors focus:outline-none focus:bg-[var(--surface-elevated)] focus:border-[var(--accent)] ${
                   isPlaying
                     ? 'bg-[var(--surface-elevated)] border-[var(--accent)]'
                     : 'bg-[var(--surface)] border-[var(--border)] hover:border-[var(--accent)]/60'
@@ -400,6 +511,11 @@ export function VodSectionTab({
                     isSeries={entry.type === 'series'}
                     name={entry.name}
                   />
+                  {entry.qualityLabel && (
+                    <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/75 border border-[var(--accent)]/60 text-[var(--accent)] font-mono-nums text-[9px] font-extrabold">
+                      {entry.qualityLabel}
+                    </span>
+                  )}
                   {pct > 0 && (
                     <div className="absolute bottom-0 inset-x-0 h-1 bg-black/70">
                       <div
@@ -408,23 +524,25 @@ export function VodSectionTab({
                       />
                     </div>
                   )}
-                  <button
-                    type="button"
-                    aria-label="Favori"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (entry.vodItem) {
-                        onToggleFavorite(vodItemToChannel(entry.vodItem));
-                      }
-                    }}
-                    className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/60 text-white hover:bg-black/80"
-                  >
-                    <Heart
-                      className={`w-3.5 h-3.5 ${
-                        isFav ? 'fill-[var(--live)] text-[var(--live)]' : 'text-white/80'
-                      }`}
-                    />
-                  </button>
+                  {entry.vodItem && (
+                    <button
+                      type="button"
+                      aria-label="Favori"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (entry.vodItem) {
+                          onToggleFavorite(vodItemToChannel(entry.vodItem));
+                        }
+                      }}
+                      className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/60 text-white hover:bg-black/80"
+                    >
+                      <Heart
+                        className={`w-3.5 h-3.5 ${
+                          isFav ? 'fill-[var(--live)] text-[var(--live)]' : 'text-white/80'
+                        }`}
+                      />
+                    </button>
+                  )}
                 </div>
 
                 <div className="p-2.5">
@@ -477,7 +595,7 @@ export function VodSectionTab({
             </button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
+          <div className="flex-1 min-h-0 overflow-y-auto touch-scroll-y p-3 space-y-2">
             {loadingEpisodes ? (
               <div className="py-12 flex items-center justify-center">
                 <div className="w-8 h-8 rounded-full border-3 border-[var(--accent)]/25 border-t-[var(--accent)] animate-spin" />

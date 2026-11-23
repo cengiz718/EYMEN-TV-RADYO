@@ -1,39 +1,62 @@
 import { useState, useEffect, useRef } from 'react';
 import {
+  AlertTriangle,
   CalendarClock,
   Check,
   Clock,
   CloudDownload,
   Copy,
   Download,
+  ExternalLink,
   EyeOff,
   FileArchive,
   FileJson,
   FileUp,
   Gamepad2,
+  Gauge,
   GitBranch,
   ImagePlus,
+  Layers,
   Monitor,
   Palette,
   Plus,
   Radio,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UserCheck,
+  Zap,
 } from 'lucide-react';
 import {
   HIDEABLE_CATEGORIES,
   type AppSettings,
   type AppTheme,
   type AspectMode,
+  type BufferPreset,
   type CategoryName,
   type ExternalListSource,
   type PlayerControlsSize,
   type RadioEffectIntensity,
   type RadioEffectMode,
 } from '../types/channel';
+import { getHlsProfileSummary } from '../utils/hlsConfig';
+import { normalizeInputUrl } from '../utils/m3uParser';
+import { APP_VERSION, compareSemver, GITHUB_REPO } from '../utils/appMeta';
+import {
+  clearErrorLogs,
+  loadErrorLogs,
+  type AppErrorEntry,
+} from '../utils/errorLogger';
+import { PWAInstallButton } from './PWAInstallButton';
+
+interface AiDiscoverResponse {
+  count: number;
+  summary: string;
+  webSources?: Array<{ title: string; uri: string }>;
+  publishedUrl?: string;
+}
 
 interface SettingsTabProps {
   settings: AppSettings;
@@ -42,6 +65,7 @@ interface SettingsTabProps {
   lastUpdatedAt: string | null;
   externalSources: ExternalListSource[];
   isSyncingExternal: boolean;
+  isAiDiscovering: boolean;
   sleepMinutes: number | null;
   isUpdating: boolean;
   isLoadingEpg: boolean;
@@ -49,9 +73,14 @@ interface SettingsTabProps {
   favoriteCount: number;
   totalChannelsCount: number;
   onlineRadiosCount: number;
+  blockedAdultCount?: number;
+  trackedPerfCount?: number;
+  channelsWithLogoCount?: number;
+  isResolvingLogos?: boolean;
   onUpdateSettings: (partial: Partial<AppSettings>) => void;
   onSaveAndUpdateUrl: (url: string, mandatory: boolean) => void;
   onAddBulkExternalSources: (rawUrlsText: string, customName?: string) => Promise<void>;
+  onAiDiscoverLists: (topic?: string) => Promise<AiDiscoverResponse>;
   onToggleExternalSource: (sourceId: string) => void;
   onRemoveExternalSource: (sourceId: string) => void;
   onSyncExternalSources: (targetSourceId?: string) => Promise<void>;
@@ -62,6 +91,8 @@ interface SettingsTabProps {
   onRefreshEpg: (customEpgUrl?: string) => void;
   onSetSleepMinutes: (minutes: number | null) => void;
   onClearFavorites: () => void;
+  onResetPerformanceStats?: () => void;
+  onAutoFindLogos?: () => void;
 }
 
 const THEME_OPTIONS: Array<{ value: AppTheme; label: string; swatch: string }> = [
@@ -74,6 +105,12 @@ const ASPECT_OPTIONS: Array<{ value: AspectMode; label: string }> = [
   { value: 'fit', label: 'Sığdır' },
   { value: 'fill', label: 'Doldur' },
   { value: 'zoom', label: 'Yakınlaştır' },
+];
+
+const BUFFER_OPTIONS: Array<{ value: BufferPreset; label: string; desc: string }> = [
+  { value: 'fast', label: 'Hızlı Açılış', desc: '14sn' },
+  { value: 'balanced', label: 'Akıllı Tampon', desc: '24-36sn' },
+  { value: 'ultra', label: 'Maks. Koruma', desc: '45-90sn' },
 ];
 
 const REFRESH_OPTIONS = [
@@ -131,6 +168,7 @@ export function SettingsTab({
   lastUpdatedAt,
   externalSources,
   isSyncingExternal,
+  isAiDiscovering,
   sleepMinutes,
   isUpdating,
   isLoadingEpg,
@@ -138,9 +176,14 @@ export function SettingsTab({
   favoriteCount,
   totalChannelsCount,
   onlineRadiosCount,
+  blockedAdultCount = 0,
+  trackedPerfCount = 0,
+  channelsWithLogoCount = 0,
+  isResolvingLogos = false,
   onUpdateSettings,
   onSaveAndUpdateUrl,
   onAddBulkExternalSources,
+  onAiDiscoverLists,
   onToggleExternalSource,
   onRemoveExternalSource,
   onSyncExternalSources,
@@ -151,6 +194,8 @@ export function SettingsTab({
   onRefreshEpg,
   onSetSleepMinutes,
   onClearFavorites,
+  onResetPerformanceStats,
+  onAutoFindLogos,
 }: SettingsTabProps) {
   const [urlInput, setUrlInput] = useState(savedUrl);
   const [mandatory, setMandatory] = useState(mandatoryAutoUpdate);
@@ -160,10 +205,70 @@ export function SettingsTab({
   const [bulkName, setBulkName] = useState('');
   const [bulkUrlsText, setBulkUrlsText] = useState('');
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [aiTopicInput, setAiTopicInput] = useState('');
+  const [aiStatusNote, setAiStatusNote] = useState<string | null>(null);
+  const [aiErrorNote, setAiErrorNote] = useState<string | null>(null);
+  const [aiWebSources, setAiWebSources] = useState<Array<{ title: string; uri: string }>>([]);
   const [copiedSample, setCopiedSample] = useState(false);
   const [radioBgInput, setRadioBgInput] = useState(settings.radioBackgroundImage);
   const extraFileRef = useRef<HTMLInputElement | null>(null);
   const radioBgFileRef = useRef<HTMLInputElement | null>(null);
+
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<{
+    status: 'latest' | 'available' | 'error';
+    latestVersion?: string;
+    notes?: string;
+    apkUrl?: string;
+    releaseUrl?: string;
+    message?: string;
+  } | null>(null);
+  const [errorLogs, setErrorLogs] = useState<AppErrorEntry[]>(loadErrorLogs);
+
+  const handleCheckGithubUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+      if (!res.ok) {
+        setUpdateInfo({
+          status: 'error',
+          message:
+            res.status === 404
+              ? 'GitHub üzerinde henüz yayınlanmış bir APK Release bulunmuyor. Mevcut sürüm aktif.'
+              : `Güncelleme sunucusu yanıt vermedi (HTTP ${res.status}).`,
+        });
+        return;
+      }
+      const data = (await res.json()) as {
+        tag_name?: string;
+        body?: string;
+        html_url?: string;
+        assets?: Array<{ name?: string; browser_download_url?: string }>;
+      };
+      const tag = (data.tag_name || APP_VERSION).replace(/^v/i, '');
+      const apkAsset = (data.assets || []).find((a) =>
+        a.name?.toLowerCase().endsWith('.apk')
+      );
+      const isNewer = compareSemver(tag, APP_VERSION) > 0;
+      setUpdateInfo({
+        status: isNewer ? 'available' : 'latest',
+        latestVersion: tag,
+        notes: data.body?.slice(0, 280),
+        apkUrl: apkAsset?.browser_download_url,
+        releaseUrl: data.html_url || `https://github.com/${GITHUB_REPO}/releases`,
+      });
+    } catch {
+      setUpdateInfo({
+        status: 'error',
+        message: 'İnternet bağlantısı veya GitHub API erişimi yok; uygulama çalışmaya devam ediyor.',
+      });
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     setUrlInput(savedUrl);
@@ -180,8 +285,9 @@ export function SettingsTab({
 
   const handleSaveUrl = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!urlInput.trim()) return;
-    onSaveAndUpdateUrl(urlInput.trim(), mandatory);
+    const normalized = normalizeInputUrl(urlInput);
+    if (!normalized) return;
+    onSaveAndUpdateUrl(normalized, mandatory);
     setSavedFeedback(true);
     window.setTimeout(() => setSavedFeedback(false), 2000);
   };
@@ -235,9 +341,15 @@ export function SettingsTab({
   };
 
   const enabledExternalCount = externalSources.filter((s) => s.enabled).length;
+  const hlsSummary = getHlsProfileSummary({
+    acceleratedPlaybackMode: settings.acceleratedPlaybackMode,
+    bufferPreset: settings.bufferPreset,
+    lowRamMode: settings.lowRamMode,
+    isMultiScreen: false,
+  });
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3 pb-6">
+    <div className="flex-1 min-h-0 overflow-y-auto touch-scroll-y px-3 py-3 space-y-3 pb-6">
       {/* Hazırlayan Attribution Card */}
       <div className="rounded-2xl bg-[var(--surface-elevated)] border border-[var(--border-strong)] p-3.5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -253,10 +365,121 @@ export function SettingsTab({
             </div>
           </div>
         </div>
-        <span className="text-[11px] font-semibold text-[var(--muted)] shrink-0">
-          Eymen TV &amp; Radyo
+        <span className="font-mono-nums text-[11px] font-bold text-[var(--accent)] shrink-0">
+          v{APP_VERSION}
         </span>
       </div>
+
+      {/* Section 0.5: Sürüm Kontrolü (GitHub) & PWA Kurulumu */}
+      <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-[var(--accent)]">
+            <CloudDownload className="w-4 h-4" />
+            <h2 className="text-xs font-bold uppercase tracking-wider">
+              Sürüm &amp; Güncelleme Kontrolü
+            </h2>
+          </div>
+          <span className="font-mono-nums text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--muted)]">
+            Sürüm {APP_VERSION}
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            disabled={checkingUpdate}
+            onClick={() => void handleCheckGithubUpdate()}
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-[var(--bg)] border border-[var(--accent)]/60 text-[var(--accent)] text-xs font-bold hover:bg-[var(--surface-elevated)] disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${checkingUpdate ? 'animate-spin' : ''}`} />
+            <span>{checkingUpdate ? 'GitHub Kontrol Ediliyor...' : 'GitHub Üzerinden Güncelleme Kontrol Et'}</span>
+          </button>
+
+          <PWAInstallButton />
+        </div>
+
+        {updateInfo && (
+          <div className="rounded-xl bg-[var(--bg)] border border-[var(--border)] p-2.5 text-[11px] space-y-1.5">
+            {updateInfo.status === 'latest' && (
+              <div className="text-[var(--accent)] font-bold">
+                Uygulamanız güncel (v{updateInfo.latestVersion}). Favorileriniz ve ayarlarınız korunuyor.
+              </div>
+            )}
+            {updateInfo.status === 'available' && (
+              <div className="space-y-1.5">
+                <div className="text-[var(--accent)] font-extrabold">
+                  Yeni Sürüm Hazır: v{updateInfo.latestVersion}
+                </div>
+                {updateInfo.notes && (
+                  <p className="text-[var(--muted)] whitespace-pre-line leading-snug">
+                    {updateInfo.notes}
+                  </p>
+                )}
+                <div className="flex items-center gap-2 pt-1">
+                  {updateInfo.apkUrl && (
+                    <a
+                      href={updateInfo.apkUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-bold"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>APK İndir (v{updateInfo.latestVersion})</span>
+                    </a>
+                  )}
+                  {updateInfo.releaseUrl && (
+                    <a
+                      href={updateInfo.releaseUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] text-xs font-semibold"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Sürüm Notu</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+            {updateInfo.status === 'error' && (
+              <div className="text-[var(--muted)]">{updateInfo.message}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Section 0.6: Otomatik Kanal & Radyo Logosu Bulucu */}
+      {onAutoFindLogos && (
+        <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-[var(--accent)]">
+              <ImagePlus className="w-4 h-4" />
+              <h2 className="text-xs font-bold uppercase tracking-wider">
+                Otomatik Kanal Logosu Bulucu
+              </h2>
+            </div>
+            <span className="font-mono-nums text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--accent)]">
+              {channelsWithLogoCount}/{totalChannelsCount} Logolu
+            </span>
+          </div>
+          <p className="text-[11px] text-[var(--muted)] leading-relaxed">
+            Logosuz veya kırık logolu TV ve radyo kanallarına IPTV-org, EPG ve resmi kaynaklardan otomatik olarak logo bulur ve önbelleğe ekler.
+          </p>
+          <button
+            type="button"
+            disabled={isResolvingLogos || totalChannelsCount === 0}
+            onClick={onAutoFindLogos}
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-bold hover:bg-[var(--accent-hover)] disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isResolvingLogos ? 'animate-spin' : ''}`} />
+            <span>
+              {isResolvingLogos
+                ? 'Kanallara Otomatik Logo Bulunuyor...'
+                : 'Eksik Logoları Otomatik Bul & Ekle'}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Section 1: Görünüm ve Tema Seçimi */}
       <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2.5">
@@ -275,7 +498,7 @@ export function SettingsTab({
                 key={opt.value}
                 type="button"
                 onClick={() => onUpdateSettings({ theme: opt.value })}
-                className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-[11px] font-bold transition-colors focus:outline-none ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-[11px] font-bold transition-colors ${
                   active
                     ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
                     : 'bg-[var(--bg)] text-[var(--ink)] border border-[var(--border)] hover:border-[var(--accent)]/60'
@@ -292,13 +515,13 @@ export function SettingsTab({
         </div>
       </div>
 
-      {/* Section 2: FuTV Pro Tarzı Toplu Liste Ekle (GitHub JSON / M3U Ek Listeler) */}
+      {/* Section 2: FuTV Pro Tarzı Toplu Liste Ekle (Web + GitHub JSON / M3U Ek Listeler) */}
       <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-[var(--accent)] min-w-0">
             <GitBranch className="w-4 h-4 shrink-0" />
             <h2 className="text-xs font-bold uppercase tracking-wider truncate">
-              Toplu Liste Ekle (GitHub JSON / Ek Liste)
+              Toplu Liste Ekle (Web / GitHub / JSON)
             </h2>
           </div>
           <span className="font-mono-nums text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--accent)] shrink-0">
@@ -307,13 +530,92 @@ export function SettingsTab({
         </div>
 
         <p className="text-[11px] text-[var(--muted)] leading-relaxed">
-          GitHub deposundaki <span className="text-[var(--ink)] font-semibold">.json</span> veya{' '}
+          GitHub ve tüm web kaynaklarındaki <span className="text-[var(--ink)] font-semibold">.json</span> veya{' '}
           <span className="text-[var(--ink)] font-semibold">.m3u</span> dosyalarını toplu olarak ekleyin. Seçili listeler program açılışında ve arka planda daima güncellenip ana listeye birleştirilir.
         </p>
 
+        {/* Gömülü Yapay Zeka (AI) Tüm Web + GitHub M3U Tarayıcı */}
+        <div className="rounded-xl bg-[var(--bg)] border border-[var(--accent)]/45 p-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-[var(--accent)] flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>AI Tüm Web &amp; GitHub M3U Bul, Ekle ve Yayınla</span>
+            </span>
+          </div>
+          <label className="flex items-center justify-between gap-2 rounded-lg p-1 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
+            <span className="text-[11px] text-[var(--muted)]">
+              Açılışta AI tüm web&apos;den yeni M3U listesi arasın
+            </span>
+            <input
+              type="checkbox"
+              checked={settings.aiAutoDiscoverGithub}
+              onChange={(e) =>
+                onUpdateSettings({ aiAutoDiscoverGithub: e.target.checked })
+              }
+              className="h-4 w-4 accent-[var(--accent)] shrink-0"
+            />
+          </label>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              value={aiTopicInput}
+              onChange={(e) => setAiTopicInput(e.target.value)}
+              placeholder="İsteğe bağlı: örn. Türkçe spor, sinema, Kürtçe..."
+              className="flex-1 rounded-lg bg-[var(--surface)] border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--ink)] placeholder-[var(--muted)]/55 focus:border-[var(--accent)]"
+            />
+            <button
+              type="button"
+              disabled={isAiDiscovering}
+              onClick={async () => {
+                setAiErrorNote(null);
+                setAiStatusNote(null);
+                setAiWebSources([]);
+                try {
+                  const res = await onAiDiscoverLists(aiTopicInput.trim() || undefined);
+                  setAiStatusNote(res.summary);
+                  if (Array.isArray(res.webSources)) {
+                    setAiWebSources(res.webSources.slice(0, 4));
+                  }
+                } catch (err) {
+                  setAiErrorNote(
+                    err instanceof Error ? err.message : 'AI web taraması başarısız.'
+                  );
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] text-[11px] font-bold hover:bg-[var(--accent-hover)] disabled:opacity-45 shrink-0"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${isAiDiscovering ? 'animate-spin' : ''}`} />
+              <span>{isAiDiscovering ? 'Arıyor...' : 'Webde Bul & Yayınla'}</span>
+            </button>
+          </div>
+          {aiErrorNote && (
+            <div className="text-[11px] font-medium text-[var(--live)]">{aiErrorNote}</div>
+          )}
+          {aiStatusNote && (
+            <div className="text-[11px] font-medium text-[var(--accent)] space-y-1">
+              <div>{aiStatusNote}</div>
+              {aiWebSources.length > 0 && (
+                <div className="text-[10px] text-[var(--muted)] space-y-0.5 pt-1 border-t border-white/10">
+                  {aiWebSources.map((src) => (
+                    <a
+                      key={src.uri}
+                      href={src.uri}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block truncate text-[var(--accent)] hover:underline"
+                    >
+                      {src.title || src.uri}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Global Auto-Sync Switch + Sync All Button */}
         <div className="flex items-center gap-2">
-          <label className="flex-1 flex items-center justify-between gap-2 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2 cursor-pointer">
+          <label className="flex-1 flex items-center justify-between gap-2 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
             <span className="text-[11px] font-semibold text-[var(--ink)]">
               Ek Listeleri Daima Güncelle
             </span>
@@ -351,7 +653,7 @@ export function SettingsTab({
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer rounded-lg p-0.5 focus-within:ring-2 focus-within:ring-[var(--accent)]">
                   <input
                     type="checkbox"
                     checked={src.enabled}
@@ -545,7 +847,8 @@ export function SettingsTab({
             </label>
             <input
               id="settings-m3u-url"
-              type="url"
+              type="text"
+              inputMode="url"
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               placeholder="https://.../playlist.m3u8"
@@ -553,7 +856,7 @@ export function SettingsTab({
             />
           </div>
 
-          <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+          <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
             <div className="min-w-0">
               <div className="text-xs font-semibold text-[var(--ink)]">
                 Açılışta Zorunlu Güncelle
@@ -568,8 +871,9 @@ export function SettingsTab({
               onChange={(e) => {
                 const next = e.target.checked;
                 setMandatory(next);
-                if (urlInput.trim()) {
-                  onSaveAndUpdateUrl(urlInput.trim(), next);
+                const normalized = normalizeInputUrl(urlInput);
+                if (normalized) {
+                  onSaveAndUpdateUrl(normalized, next);
                 }
               }}
               className="h-4 w-4 accent-[var(--accent)] shrink-0"
@@ -590,7 +894,7 @@ export function SettingsTab({
                     onClick={() =>
                       onUpdateSettings({ autoRefreshMinutes: opt.value })
                     }
-                    className={`py-1.5 rounded-lg text-[11px] font-semibold transition-colors focus:outline-none ${
+                    className={`py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
                       active
                         ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
                         : 'bg-[var(--bg)] text-[var(--muted)] border border-[var(--border)] hover:text-[var(--ink)]'
@@ -642,14 +946,106 @@ export function SettingsTab({
         </form>
       </div>
 
-      {/* Section 4: Kategori Gizleme */}
-      <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2.5">
+      {/* Section 4: +18 Yetişkin Filtresi, Akıllı Gruplandırma & Kategori Gizleme */}
+      <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-[var(--accent)]">
-            <EyeOff className="w-4 h-4" />
+            <ShieldCheck className="w-4 h-4" />
             <h2 className="text-xs font-bold uppercase tracking-wider">
-              Kategori Gizleme
+              İçerik Filtresi (+18) &amp; Akıllı Gruplandırma
             </h2>
+          </div>
+          {settings.hideAdultContent && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/40">
+              +18 Kapalı
+            </span>
+          )}
+        </div>
+
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--accent)]/45 px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-[var(--ink)]">
+              Yetişkin İçerikleri Kapat (+18 Güvenli Mod)
+            </div>
+            <div className="text-[11px] text-[var(--muted)]">
+              +18, erotik ve yetişkin yayınlar TV, Film/Dizi ve Radyo listelerinden tamamen gizlenir
+              {blockedAdultCount > 0 ? ` (${blockedAdultCount} içerik engellendi)` : ''}
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.hideAdultContent}
+            onChange={(e) =>
+              onUpdateSettings({ hideAdultContent: e.target.checked })
+            }
+            className="h-4 w-4 accent-[var(--accent)] shrink-0"
+          />
+        </label>
+
+        <div className="rounded-xl bg-[var(--bg)] border border-[var(--border)] p-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-[var(--ink)]">
+              <Layers className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span>Akıllı Gruplandırma (Çoklu Tür Filtresi)</span>
+            </span>
+            {settings.smartGroupFilters.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onUpdateSettings({ smartGroupFilters: [] })}
+                className="text-[10px] font-bold text-[var(--accent)] hover:underline"
+              >
+                Filtreyi Temizle
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-[var(--muted)]">
+            Sadece Spor, Haber veya Belgesel gibi belirlediğiniz türleri tek seferde listelemek için seçim yapın:
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {HIDEABLE_CATEGORIES.map((cat) => {
+              const selected = settings.smartGroupFilters.includes(cat);
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => {
+                    const next = selected
+                      ? settings.smartGroupFilters.filter((c) => c !== cat)
+                      : [...settings.smartGroupFilters, cat];
+                    onUpdateSettings({ smartGroupFilters: next });
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                    selected
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
+                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+          <label className="flex items-center justify-between gap-3 pt-1 cursor-pointer rounded-lg p-1 focus-within:ring-2 focus-within:ring-[var(--accent)]">
+            <span className="text-[11px] text-[var(--muted)]">
+              Kanal listesinde tür başlıklarını gruplu göster
+            </span>
+            <input
+              type="checkbox"
+              checked={settings.groupChannelsByCategory}
+              onChange={(e) =>
+                onUpdateSettings({ groupChannelsByCategory: e.target.checked })
+              }
+              className="h-4 w-4 accent-[var(--accent)] shrink-0"
+            />
+          </label>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <div className="flex items-center gap-2 text-[var(--accent)]">
+            <EyeOff className="w-4 h-4" />
+            <h3 className="text-[11px] font-bold uppercase tracking-wider">
+              Kategori Gizleme
+            </h3>
           </div>
           {settings.hiddenCategories.length > 0 && (
             <button
@@ -703,7 +1099,7 @@ export function SettingsTab({
           </span>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <div>
             <div className="text-xs font-semibold text-[var(--ink)]">
               Online EPG Göster
@@ -732,7 +1128,8 @@ export function SettingsTab({
           <div className="flex items-center gap-2">
             <input
               id="settings-epg-url"
-              type="url"
+              type="text"
+              inputMode="url"
               value={epgUrlInput}
               onChange={(e) => setEpgUrlInput(e.target.value)}
               placeholder="https://.../epg.xml.gz"
@@ -816,7 +1213,7 @@ export function SettingsTab({
           </div>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <div>
             <div className="text-xs font-semibold text-[var(--ink)]">
               Yüksek Kontrastlı İkon Çerçeveleri
@@ -889,7 +1286,7 @@ export function SettingsTab({
           </div>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <span className="text-xs font-semibold text-[var(--ink)]">
             Radyo Logosunu Sahnede Göster
           </span>
@@ -909,7 +1306,8 @@ export function SettingsTab({
           </div>
           <div className="flex items-center gap-1.5">
             <input
-              type="url"
+              type="text"
+              inputMode="url"
               value={radioBgInput.startsWith('data:') ? 'Yerel fotoğraf yüklendi' : radioBgInput}
               readOnly={radioBgInput.startsWith('data:')}
               onChange={(e) => setRadioBgInput(e.target.value)}
@@ -972,11 +1370,96 @@ export function SettingsTab({
 
       {/* Section 6: Oynatıcı & Kaldığın Yerden Devam */}
       <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-3">
-        <div className="flex items-center gap-2 text-[var(--accent)]">
-          <Monitor className="w-4 h-4" />
-          <h2 className="text-xs font-bold uppercase tracking-wider">
-            Oynatıcı ve Hafıza Ayarları
-          </h2>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-[var(--accent)]">
+            <Monitor className="w-4 h-4" />
+            <h2 className="text-xs font-bold uppercase tracking-wider">
+              Oynatıcı ve Hafıza Ayarları
+            </h2>
+          </div>
+          {settings.acceleratedPlaybackMode && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/40">
+              HLS Hızlı Mod Aktif
+            </span>
+          )}
+        </div>
+
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--accent)]/60 px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[var(--accent)]/15 border border-[var(--accent)]/40 flex items-center justify-center shrink-0 mt-0.5">
+              <Zap className="w-4 h-4 text-[var(--accent)]" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs font-extrabold text-[var(--accent)]">
+                Hızlandırılmış Oynatma Modu (Anti-Donma · HLS)
+              </div>
+              <div className="text-[11px] text-[var(--muted)] leading-snug mt-0.5">
+                Düşük internet hızlarında HLS önbellek, boşluk atlama ve uyarlamalı bit hızını (ABR) dinamik ayarlayarak donmayı en aza indirir.
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono-nums text-[10px] font-bold text-[var(--ink)]">
+                <span className="px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)]">
+                  Tampon: {hlsSummary.maxBufferLength}–{hlsSummary.maxMaxBufferLength} sn
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)]">
+                  ABR Başlangıç: {hlsSummary.abrDefaultKbps} kbps
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)]">
+                  {hlsSummary.fragLoadingMaxRetry}x Yeniden Deneme
+                </span>
+              </div>
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.acceleratedPlaybackMode}
+            onChange={(e) =>
+              onUpdateSettings({ acceleratedPlaybackMode: e.target.checked })
+            }
+            className="h-4 w-4 accent-[var(--accent)] shrink-0"
+          />
+        </label>
+
+        {/* Performans Derecelendirme & Stabil Kanalları Başa Taşı */}
+        <div className="rounded-xl bg-[var(--bg)] border border-[var(--border-strong)]/60 p-3 space-y-2">
+          <label className="flex items-center justify-between gap-3 cursor-pointer rounded-lg p-0.5 focus-within:ring-2 focus-within:ring-[var(--accent)]">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-[var(--accent)]/15 border border-[var(--accent)]/40 flex items-center justify-center shrink-0 mt-0.5">
+                <Gauge className="w-4 h-4 text-[var(--accent)]" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-extrabold text-[var(--ink)]">
+                  Kanal Performans Derecelendirme &amp; Otomatik Sıralama
+                </div>
+                <div className="text-[11px] text-[var(--muted)] leading-snug mt-0.5">
+                  Açılış hızını ve takılma oranını cihazınızda takip eder; en stabil çalışan kanalları otomatik olarak listenin en başına taşır.
+                </div>
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={settings.performanceSortEnabled}
+              onChange={(e) =>
+                onUpdateSettings({ performanceSortEnabled: e.target.checked })
+              }
+              className="h-4 w-4 accent-[var(--accent)] shrink-0"
+            />
+          </label>
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-[var(--border)]/60 text-[11px]">
+            <span className="text-[var(--muted)]">
+              Ölçülen kanal: <span className="font-mono-nums font-bold text-[var(--accent)]">{trackedPerfCount}</span>
+            </span>
+            {onResetPerformanceStats && (
+              <button
+                type="button"
+                disabled={trackedPerfCount === 0}
+                onClick={onResetPerformanceStats}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--live)] hover:border-[var(--live)]/50 disabled:opacity-40 text-[11px] font-semibold"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Skorları Sıfırla</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div>
@@ -1007,11 +1490,66 @@ export function SettingsTab({
         </div>
 
         <div>
+          <div className="text-[11px] font-medium text-[var(--muted)] mb-1">
+            Yayın Tamponu / Yavaş İnternet Hızlandırma (Anti-Donma)
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {BUFFER_OPTIONS.map((opt) => {
+              const active = settings.bufferPreset === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onUpdateSettings({ bufferPreset: opt.value })}
+                  className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold transition-colors ${
+                    active
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                      : 'bg-[var(--bg)] text-[var(--muted)] border border-[var(--border)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  <div>{opt.label}</div>
+                  <div className="text-[9px] opacity-80 font-mono-nums">{opt.desc}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[11px] font-medium text-[var(--muted)] mb-1.5">
+            Menüleri ve Liste Panelini Otomatik Kapatma Süresi
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {[
+              { value: 5, label: '5 Saniye (Önerilen)' },
+              { value: 10, label: '10 Saniye' },
+              { value: 0, label: 'Kapalı' },
+            ].map((opt) => {
+              const active = settings.menuAutoCloseSeconds === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onUpdateSettings({ menuAutoCloseSeconds: opt.value })}
+                  className={`py-1.5 px-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                    active
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                      : 'bg-[var(--bg)] text-[var(--muted)] border border-[var(--border)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
           <div className="text-[11px] font-medium text-[var(--muted)] mb-1.5">
             Tam Ekran Kontrollerini Gizleme Süresi
           </div>
           <div className="grid grid-cols-3 gap-1.5">
-            {[3, 4, 8].map((sec) => {
+            {[3, 5, 8].map((sec) => {
               const active = settings.hudHideSeconds === sec;
               return (
                 <button
@@ -1031,7 +1569,7 @@ export function SettingsTab({
           </div>
         </div>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <div>
             <div className="text-xs font-semibold text-[var(--ink)]">
               Kaldığın Yerden Devam Et
@@ -1050,7 +1588,7 @@ export function SettingsTab({
           />
         </label>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <div className="flex items-center gap-2.5 min-w-0">
             <Radio className="w-4 h-4 text-[var(--accent)] shrink-0" />
             <div>
@@ -1074,7 +1612,7 @@ export function SettingsTab({
           />
         </label>
 
-        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer">
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
           <div>
             <div className="text-xs font-semibold text-[var(--ink)]">
               Açılışta Yayını Otomatik Başlat
@@ -1088,6 +1626,25 @@ export function SettingsTab({
             checked={settings.autoPlayOnLaunch}
             onChange={(e) =>
               onUpdateSettings({ autoPlayOnLaunch: e.target.checked })
+            }
+            className="h-4 w-4 accent-[var(--accent)] shrink-0"
+          />
+        </label>
+
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg)] border border-[var(--accent)]/40 px-3 py-2.5 cursor-pointer focus-within:ring-2 focus-within:ring-[var(--accent)]">
+          <div>
+            <div className="text-xs font-semibold text-[var(--accent)]">
+              Düşük RAM &amp; Hızlı Açılış Modu (Mi Box Önerilen)
+            </div>
+            <div className="text-[11px] text-[var(--muted)]">
+              HLS bellek tamponunu sınırlar, açılışı hızlandırır ve düşük RAM cihazlarda akıcı çalışır
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.lowRamMode}
+            onChange={(e) =>
+              onUpdateSettings({ lowRamMode: e.target.checked })
             }
             className="h-4 w-4 accent-[var(--accent)] shrink-0"
           />
@@ -1158,25 +1715,25 @@ export function SettingsTab({
         </div>
       </div>
 
-      {/* Section 9: Dosya İndirme ve GitHub APK Arşivi */}
+      {/* Section 9: Dosya İndirme ve Tam Kaynak Paketi */}
       <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2.5">
         <div className="flex items-center gap-2 text-[var(--accent)]">
           <Download className="w-4 h-4" />
           <h2 className="text-xs font-bold uppercase tracking-wider">
-            Dosyaları &amp; GitHub APK Kodlarını İndir
+            Programın Tüm Dosyaları &amp; APK Kaynağı
           </h2>
         </div>
         <p className="text-[11px] text-[var(--muted)]">
-          Güncel M3U8 listesini, örnek GitHub JSON şablonunu veya GitHub Actions APK derleme iş akışını (`.github/workflows/main.yml`) içeren kaynak paketini indirin.
+          Tüm kaynak kodları, özel simgeler, M3U listeleri, AI entegrasyonu ve GitHub Actions APK derleme dosyasını eksiksiz tek paket halinde indirin.
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <a
-            href="/api/export/playlist.m3u8"
-            download="playlist.m3u8"
+            href="/api/export/source.zip"
+            download="eymen-tv-radyo-tam-kaynak.zip"
             className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-bold hover:bg-[var(--accent-hover)] transition-colors"
           >
-            <Download className="w-4 h-4" />
-            <span>playlist.m3u8 İndir</span>
+            <FileArchive className="w-4 h-4" />
+            <span>Tüm Dosyalar (.ZIP)</span>
           </a>
           <a
             href="/api/export/source.tar.gz"
@@ -1184,7 +1741,15 @@ export function SettingsTab({
             className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-[var(--ink)] text-xs font-bold hover:border-[var(--accent)] transition-colors"
           >
             <FileArchive className="w-4 h-4 text-[var(--accent)]" />
-            <span>GitHub APK Kaynağı (.tar.gz)</span>
+            <span>Kaynak (.tar.gz)</span>
+          </a>
+          <a
+            href="/api/export/playlist.m3u8"
+            download="playlist.m3u8"
+            className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[var(--bg)] border border-[var(--border)] text-[var(--ink)] text-xs font-bold hover:border-[var(--accent)] transition-colors"
+          >
+            <Download className="w-4 h-4 text-[var(--accent)]" />
+            <span>playlist.m3u8</span>
           </a>
         </div>
       </div>
@@ -1209,6 +1774,62 @@ export function SettingsTab({
           <Trash2 className="w-3.5 h-3.5" />
           <span>Favorileri Sil</span>
         </button>
+      </div>
+
+      {/* Section 11: Yerel Hata Kayıtları (Kişisel Veri Toplanmaz) */}
+      <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3.5 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-[var(--accent)]">
+            <AlertTriangle className="w-4 h-4" />
+            <h2 className="text-xs font-bold uppercase tracking-wider">
+              Hata Günlüğü ({errorLogs.length})
+            </h2>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setErrorLogs(loadErrorLogs())}
+              className="px-2 py-1 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[10px] font-semibold text-[var(--muted)] hover:text-[var(--ink)]"
+            >
+              Yenile
+            </button>
+            <button
+              type="button"
+              disabled={errorLogs.length === 0}
+              onClick={() => {
+                clearErrorLogs();
+                setErrorLogs([]);
+              }}
+              className="px-2 py-1 rounded-lg bg-[var(--bg)] border border-[var(--live)]/40 text-[10px] font-semibold text-[var(--live)] disabled:opacity-40"
+            >
+              Temizle
+            </button>
+          </div>
+        </div>
+        {errorLogs.length === 0 ? (
+          <div className="text-[11px] text-[var(--muted)]">
+            Kaydedilmiş sistem veya yayın hatası yok.
+          </div>
+        ) : (
+          <div className="max-h-36 overflow-y-auto touch-scroll-y space-y-1.5 pr-1">
+            {errorLogs.slice(0, 10).map((entry) => (
+              <div
+                key={entry.id}
+                className="rounded-lg bg-[var(--bg)] border border-[var(--border)] px-2.5 py-1.5 text-[10px]"
+              >
+                <div className="flex items-center justify-between gap-2 font-mono-nums text-[var(--muted)]">
+                  <span className="uppercase font-bold text-[var(--accent)]">
+                    {entry.source}
+                  </span>
+                  <span>{entry.timestamp}</span>
+                </div>
+                <div className="text-[var(--ink)] font-medium break-words mt-0.5">
+                  {entry.message}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

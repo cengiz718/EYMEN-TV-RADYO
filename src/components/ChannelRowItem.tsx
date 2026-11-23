@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Heart, Radio, Tv } from 'lucide-react';
 import type { Channel } from '../types/channel';
+import {
+  getChannelPerfDisplay,
+  type ChannelPerfStats,
+} from '../utils/channelPerformance';
+import { buildChannelLogoProxyUrl } from '../utils/logoResolver';
 
 interface ChannelRowItemProps {
   channel: Channel;
@@ -9,31 +14,51 @@ interface ChannelRowItemProps {
   isFocused?: boolean;
   compact?: boolean;
   epgNow?: string | null;
+  perfStats?: ChannelPerfStats | null;
   onSelect: () => void;
   onToggleFavorite: () => void;
 }
 
-export function ChannelRowItem({
+export const ChannelRowItem = memo(function ChannelRowItem({
   channel,
   isPlaying,
   isFavorite,
   isFocused = false,
   compact = false,
   epgNow = null,
+  perfStats = null,
   onSelect,
   onToggleFavorite,
 }: ChannelRowItemProps) {
-  const [imgFailed, setImgFailed] = useState(false);
+  const [fallbackStage, setFallbackStage] = useState<'primary' | 'byName' | 'failed'>('primary');
 
+  useEffect(() => {
+    setFallbackStage('primary');
+  }, [channel.id, channel.logoUrl]);
+
+  const primaryLogoSrc = buildChannelLogoProxyUrl(channel);
   const logoSrc =
-    channel.logoUrl && !imgFailed
-      ? `/api/logo?url=${encodeURIComponent(channel.logoUrl)}`
+    fallbackStage === 'primary'
+      ? primaryLogoSrc
+      : fallbackStage === 'byName'
+      ? `/api/logo?name=${encodeURIComponent(channel.name)}${channel.isRadio ? '&radio=1' : ''}`
       : null;
+
+  const perfDisplay = getChannelPerfDisplay(perfStats);
+  const perfColorCls =
+    perfDisplay?.tone === 'fast'
+      ? 'text-[var(--accent)] font-bold'
+      : perfDisplay?.tone === 'stable'
+      ? 'text-emerald-400 font-semibold'
+      : perfDisplay?.tone === 'warn'
+      ? 'text-amber-300 font-medium'
+      : 'text-[var(--live)] font-semibold';
 
   return (
     <div
       role="button"
       tabIndex={0}
+      data-focus-inset="true"
       data-channel-id={channel.id}
       onClick={onSelect}
       onKeyDown={(e) => {
@@ -42,7 +67,7 @@ export function ChannelRowItem({
           onSelect();
         }
       }}
-      className={`group w-full flex items-center rounded-xl border transition-colors cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+      className={`group w-full min-h-[54px] flex items-center rounded-xl border transition-colors cursor-pointer select-none touch-manipulation active:scale-[0.99] focus:outline-none focus:bg-[var(--surface-elevated)] focus:border-[var(--accent)] ${
         compact ? 'px-2.5 py-2' : 'px-3 py-2.5'
       } ${
         isPlaying
@@ -62,7 +87,10 @@ export function ChannelRowItem({
             src={logoSrc}
             alt={channel.name}
             loading="lazy"
-            onError={() => setImgFailed(true)}
+            decoding="async"
+            onError={() =>
+              setFallbackStage((prev) => (prev === 'primary' ? 'byName' : 'failed'))
+            }
             className="w-full h-full object-contain p-1"
           />
         ) : channel.isRadio ? (
@@ -87,6 +115,12 @@ export function ChannelRowItem({
               · RADYO
             </span>
           )}
+          {perfDisplay && (
+            <span className={`font-mono-nums shrink-0 ${perfColorCls}`}>
+              · {perfDisplay.startupText ? `${perfDisplay.startupText} · ` : ''}
+              {perfDisplay.label} {perfDisplay.scoreText}
+            </span>
+          )}
         </div>
         {epgNow && (
           <div className="mt-0.5 text-[11px] text-[var(--accent)]/90 truncate">
@@ -98,11 +132,12 @@ export function ChannelRowItem({
       <button
         type="button"
         aria-label="Favori"
+        data-focus-inset="true"
         onClick={(e) => {
           e.stopPropagation();
           onToggleFavorite();
         }}
-        className="ml-2 min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] transition-colors"
+        className="ml-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] transition-colors"
       >
         <Heart
           className={`w-5 h-5 ${
@@ -114,4 +149,4 @@ export function ChannelRowItem({
       </button>
     </div>
   );
-}
+});

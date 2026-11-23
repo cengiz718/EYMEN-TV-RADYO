@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#141b29" />
+      <stop offset="100%" stop-color="#0a0c10" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="22" y1="24" x2="106" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffbe73" />
+      <stop offset="50%" stop-color="#ffad55" />
+      <stop offset="100%" stop-color="#e58a24" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bgGrad)" stroke="#ffad55" stroke-opacity="0.35" stroke-width="3" />
+  <path d="M48 22L64 36L80 22" stroke="url(#accentGrad)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="22" y="36" width="84" height="58" rx="14" fill="#0f1520" stroke="url(#accentGrad)" stroke-width="5.5" />
+  <path d="M53 51.5C53 49.8 54.9 48.8 56.3 49.7L79.8 63.2C81.2 64.0 81.2 66.0 79.8 66.8L56.3 80.3C54.9 81.2 53 80.2 53 78.5V51.5Z" fill="url(#accentGrad)" />
+  <path d="M88 47C93 52 93 78 88 83" stroke="#00e5ff" stroke-width="3.5" stroke-linecap="round" stroke-opacity="0.85" />
+  <rect x="42" y="102" width="44" height="5.5" rx="2.75" fill="url(#accentGrad)" />
+</svg>

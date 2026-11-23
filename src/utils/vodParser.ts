@@ -1,4 +1,5 @@
 import type { Channel, VodItem } from '../types/channel';
+import { detectQualityLabel } from './m3uParser';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
@@ -211,6 +212,7 @@ export function parseVodM3u(content: string): VodItem[] {
         year,
         seasonEpisode,
         seriesTitle,
+        qualityLabel: detectQualityLabel(name),
         userAgent: pipeUa ?? itemUserAgent ?? globalUserAgent,
         referer: pipeRef ?? itemReferer ?? globalReferer,
         origin: pipeOrig ?? itemOrigin ?? globalOrigin,
@@ -238,6 +240,7 @@ export function vodItemToChannel(item: VodItem): Channel {
     smartCategory: item.autoCategory,
     isRadio: false,
     isVod: true,
+    qualityLabel: item.qualityLabel,
     userAgent: item.userAgent,
     referer: item.referer,
     origin: item.origin,

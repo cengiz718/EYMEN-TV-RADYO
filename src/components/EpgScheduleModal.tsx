@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
-import { CalendarClock, X } from 'lucide-react';
-import type { Channel, EpgProgrammeItem } from '../types/channel';
+import { Bell, BellRing, CalendarClock, X } from 'lucide-react';
+import type { Channel, EpgProgrammeItem, EpgReminderItem } from '../types/channel';
 import { computeEpgProgress, formatEpgTime } from '../utils/epg';
+import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
 
 interface EpgScheduleModalProps {
   isOpen: boolean;
   channel: Channel | null;
   epgUrl?: string;
+  menuAutoCloseSeconds?: number;
+  reminders?: EpgReminderItem[];
+  onToggleReminder?: (item: EpgReminderItem) => void;
   onClose: () => void;
 }
 
@@ -14,10 +18,15 @@ export function EpgScheduleModal({
   isOpen,
   channel,
   epgUrl,
+  menuAutoCloseSeconds = 5,
+  reminders = [],
+  onToggleReminder,
   onClose,
 }: EpgScheduleModalProps) {
   const [programmes, setProgrammes] = useState<EpgProgrammeItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  useIdleAutoClose(Boolean(isOpen && channel), menuAutoCloseSeconds, onClose, isLoading);
 
   useEffect(() => {
     if (!isOpen || !channel) return;
@@ -49,6 +58,7 @@ export function EpgScheduleModal({
   if (!isOpen || !channel) return null;
 
   const now = Date.now();
+  const reminderIds = new Set(reminders.map((r) => r.id));
 
   return (
     <div
@@ -56,6 +66,8 @@ export function EpgScheduleModal({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="w-full max-w-md max-h-[82dvh] flex flex-col rounded-2xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
@@ -67,7 +79,7 @@ export function EpgScheduleModal({
                 {channel.name} — Yayın Akışı (EPG)
               </h2>
               <p className="text-[11px] text-[var(--muted)]">
-                Şimdi ne var, sonra ne var?
+                Şimdi ne var, sonra ne var? · Program hatırlatıcı
               </p>
             </div>
           </div>
@@ -80,7 +92,7 @@ export function EpgScheduleModal({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div className="flex-1 min-h-0 overflow-y-auto touch-scroll-y p-3 space-y-2">
           {isLoading ? (
             <div className="py-12 flex items-center justify-center">
               <div className="w-8 h-8 rounded-full border-3 border-[var(--accent)]/25 border-t-[var(--accent)] animate-spin" />
@@ -92,7 +104,10 @@ export function EpgScheduleModal({
           ) : (
             programmes.map((p, idx) => {
               const isLive = p.startMs <= now && p.stopMs > now;
+              const isFuture = p.startMs > now;
               const pct = isLive ? computeEpgProgress(p.startMs, p.stopMs) : 0;
+              const remId = `${channel.id}_${p.startMs}`;
+              const hasReminder = reminderIds.has(remId);
               return (
                 <div
                   key={`${p.startMs}_${idx}`}
@@ -110,11 +125,42 @@ export function EpgScheduleModal({
                     >
                       {formatEpgTime(p.startMs)} – {formatEpgTime(p.stopMs)}
                     </span>
-                    {isLive && (
+                    {isLive ? (
                       <span className="text-[11px] font-extrabold text-[var(--accent)] uppercase tracking-wide">
                         ŞİMDİ YAYINDA
                       </span>
-                    )}
+                    ) : isFuture && onToggleReminder ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onToggleReminder({
+                            id: remId,
+                            channelId: channel.id,
+                            channelName: channel.name,
+                            title: p.title,
+                            startMs: p.startMs,
+                            stopMs: p.stopMs,
+                          })
+                        }
+                        className={`touch-compact flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold transition-colors ${
+                          hasReminder
+                            ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                            : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--accent)] hover:border-[var(--accent)]'
+                        }`}
+                      >
+                        {hasReminder ? (
+                          <>
+                            <BellRing className="w-3 h-3" />
+                            <span>Hatırlatılıyor</span>
+                          </>
+                        ) : (
+                          <>
+                            <Bell className="w-3 h-3" />
+                            <span>Hatırlat</span>
+                          </>
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                   <div className="mt-1 text-[13px] font-semibold text-[var(--ink)]">
                     {p.title}

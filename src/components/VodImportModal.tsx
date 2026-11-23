@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { CloudDownload, FileUp, Film, KeyRound, Trash2, X } from 'lucide-react';
 import type { XtreamSeriesEntry, XtreamVodAuth } from '../types/channel';
+import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
+import { normalizeInputUrl } from '../utils/m3uParser';
 
 type VodSourceTab = 'url' | 'file' | 'xtream';
 
@@ -8,6 +10,7 @@ interface VodImportModalProps {
   isOpen: boolean;
   savedVodUrl: string;
   hasVodItems: boolean;
+  menuAutoCloseSeconds?: number;
   onClose: () => void;
   onImportVodUrl: (url: string) => Promise<void>;
   onImportVodFile: (content: string, filename: string) => void;
@@ -27,6 +30,7 @@ export function VodImportModal({
   isOpen,
   savedVodUrl,
   hasVodItems,
+  menuAutoCloseSeconds = 5,
   onClose,
   onImportVodUrl,
   onImportVodFile,
@@ -44,15 +48,18 @@ export function VodImportModal({
 
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  useIdleAutoClose(isOpen, menuAutoCloseSeconds, onClose, isBusy);
+
   if (!isOpen) return null;
 
   const handleSubmitUrl = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!urlInput.trim()) return;
+    const normalized = normalizeInputUrl(urlInput);
+    if (!normalized) return;
     setErrorMsg(null);
     setIsBusy(true);
     try {
-      await onImportVodUrl(urlInput.trim());
+      await onImportVodUrl(normalized);
       onClose();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Liste yüklenemedi.');
@@ -67,28 +74,36 @@ export function VodImportModal({
     if (!file) return;
     try {
       const text = await file.text();
-      if (!text.includes('#EXTM3U') && !text.includes('#EXTINF')) {
-        setErrorMsg('Seçilen dosya geçerli bir M3U / M3U8 listesi değil.');
+      const trimmed = text.trimStart();
+      const isJson =
+        file.name.toLowerCase().endsWith('.json') ||
+        trimmed.startsWith('{') ||
+        trimmed.startsWith('[');
+      if (!isJson && !text.includes('#EXTM3U') && !text.includes('#EXTINF')) {
+        setErrorMsg('Seçilen dosya geçerli bir M3U, M3U8 veya JSON listesi değil.');
         return;
       }
       onImportVodFile(text, file.name);
       onClose();
     } catch {
       setErrorMsg('Dosya okunamadı.');
+    } finally {
+      e.target.value = '';
     }
   };
 
   const handleSubmitXtream = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    if (!xtreamServer.trim() || !xtreamUser.trim() || !xtreamPass.trim()) {
+    const normalizedServer = normalizeInputUrl(xtreamServer);
+    if (!normalizedServer || !xtreamUser.trim() || !xtreamPass.trim()) {
       setErrorMsg('Sunucu, kullanıcı adı ve şifre alanlarını doldurun.');
       return;
     }
     setIsBusy(true);
     try {
       await onImportXtreamVod(
-        xtreamServer.trim(),
+        normalizedServer,
         xtreamUser.trim(),
         xtreamPass.trim()
       );
@@ -108,10 +123,12 @@ export function VodImportModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-2xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl overflow-hidden"
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-lg max-h-[90dvh] flex flex-col rounded-2xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 px-5 py-4 bg-[var(--surface-2)] border-b border-[var(--border)]">
+        <div className="shrink-0 flex items-start justify-between gap-3 px-5 py-4 bg-[var(--surface-2)] border-b border-[var(--border)]">
           <div className="flex items-center gap-2.5">
             <Film className="w-5 h-5 text-[var(--accent)] shrink-0" />
             <div>
@@ -132,7 +149,7 @@ export function VodImportModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 p-2 bg-[var(--bg)] border-b border-[var(--border)]">
+        <div className="shrink-0 grid grid-cols-3 gap-1 p-2 bg-[var(--bg)] border-b border-[var(--border)]">
           <button
             type="button"
             onClick={() => {
@@ -182,20 +199,51 @@ export function VodImportModal({
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto touch-scroll-y p-4 sm:p-5 space-y-4">
           {tab === 'url' && (
             <form onSubmit={handleSubmitUrl} className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-[var(--muted)] mb-1.5">
-                  Film / Dizi M3U veya M3U8 Bağlantısı
+                  Film / Dizi M3U, M3U8, JSON veya CloudStream repo.json Adresi
                 </label>
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="https://.../filmler-ve-diziler.m3u"
+                  placeholder="https://.../filmler.m3u veya .../repo.json"
                   className="w-full rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3.5 py-2.5 text-sm text-[var(--ink)] placeholder-[var(--muted)]/60 focus:outline-none focus:border-[var(--accent)]"
                 />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-[var(--muted)]">
+                  Hızlı Repo:
+                </span>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() =>
+                    setUrlInput(
+                      'https://raw.githubusercontent.com/Wiojelt/TurkSinema/main/repo.json'
+                    )
+                  }
+                  className="px-2 py-1 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[10px] font-bold text-[var(--accent)] hover:border-[var(--accent)]"
+                >
+                  TurkSinema repo.json
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() =>
+                    setUrlInput(
+                      'https://raw.githubusercontent.com/Wiojelt/TurkSpor/main/repo.json'
+                    )
+                  }
+                  className="px-2 py-1 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[10px] font-bold text-[var(--accent)] hover:border-[var(--accent)]"
+                >
+                  TurkSpor repo.json
+                </button>
               </div>
 
               {errorMsg && (
@@ -235,7 +283,7 @@ export function VodImportModal({
               <input
                 ref={fileRef}
                 type="file"
-                accept=".m3u,.m3u8,.txt"
+                accept=".m3u,.m3u8,.json,.txt"
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -246,7 +294,7 @@ export function VodImportModal({
               >
                 <FileUp className="w-7 h-7 text-[var(--accent)]" />
                 <span className="text-sm font-bold text-[var(--ink)]">
-                  Cihazdan Film / Dizi M3U Dosyası Seç
+                  Cihazdan Film / Dizi M3U veya JSON Dosyası Seç
                 </span>
                 <span className="text-xs text-[var(--muted)]">
                   Filmler, diziler ve tür kategorileri otomatik ayrıştırılır
@@ -265,7 +313,8 @@ export function VodImportModal({
                   Sunucu Adresi (Host / URL)
                 </label>
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   value={xtreamServer}
                   onChange={(e) => setXtreamServer(e.target.value)}
                   placeholder="http://sunucu.ornek:8080"

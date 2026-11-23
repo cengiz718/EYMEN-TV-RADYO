@@ -1,7 +1,9 @@
 import { X } from 'lucide-react';
+import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
 
 interface SleepTimerModalProps {
   isOpen: boolean;
+  menuAutoCloseSeconds?: number;
   onClose: () => void;
   onSelectMinutes: (minutes: number | null) => void;
 }
@@ -10,9 +12,12 @@ const DURATIONS = [15, 30, 45, 60, 90];
 
 export function SleepTimerModal({
   isOpen,
+  menuAutoCloseSeconds = 5,
   onClose,
   onSelectMinutes,
 }: SleepTimerModalProps) {
+  useIdleAutoClose(isOpen, menuAutoCloseSeconds, onClose);
+
   if (!isOpen) return null;
 
   return (
@@ -21,6 +26,8 @@ export function SleepTimerModal({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="w-full max-w-sm rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >

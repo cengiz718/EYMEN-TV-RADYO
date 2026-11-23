@@ -55,7 +55,7 @@ export function RadioVisualizerOverlay({
 
   return (
     <div
-      className="absolute inset-0 flex items-center justify-center z-10 select-none overflow-hidden"
+      className="absolute inset-0 flex items-center justify-center z-10 select-none overflow-hidden pointer-events-none"
       style={{
         background:
           'radial-gradient(circle at center, var(--surface-elevated) 0%, var(--bg) 90%)',
@@ -199,9 +199,15 @@ export function RadioVisualizerOverlay({
       {/* Centered Station Card */}
       <div className="relative z-10 flex flex-col items-center text-center px-5 pb-12">
         <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-3xl bg-[var(--surface)]/85 backdrop-blur-md border-2 border-[var(--accent)]/80 shadow-2xl flex items-center justify-center overflow-hidden">
-          {showLogo && channel.logoUrl ? (
+          {showLogo ? (
             <img
-              src={`/api/logo?url=${encodeURIComponent(channel.logoUrl)}`}
+              src={
+                channel.logoUrl
+                  ? `/api/logo?url=${encodeURIComponent(
+                      channel.logoUrl
+                    )}&name=${encodeURIComponent(channel.name)}&radio=1`
+                  : `/api/logo?name=${encodeURIComponent(channel.name)}&radio=1`
+              }
               alt={channel.name}
               className="w-14 h-14 sm:w-16 sm:h-16 object-contain"
               onError={(e) => {

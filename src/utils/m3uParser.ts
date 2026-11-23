@@ -17,6 +17,15 @@ function hashString(input: string): number {
   return hash;
 }
 
+export function detectQualityLabel(name: string): string | undefined {
+  const u = name.toUpperCase();
+  if (/\b(4K|UHD|2160P)\b/.test(u)) return '4K';
+  if (/\b(FHD|1080P|FULL\s*HD)\b/.test(u)) return 'FHD';
+  if (/\b(HD|720P)\b/.test(u)) return 'HD';
+  if (/\b(SD|480P)\b/.test(u)) return 'SD';
+  return undefined;
+}
+
 function detectRadio(name: string, group: string): boolean {
   const upper = `${name} ${group}`.toUpperCase();
   const radioKeywords = [
@@ -48,23 +57,87 @@ function detectRadio(name: string, group: string): boolean {
     'SELDA BAGCAN',
     'SONER ARICA',
     'VINTAGE MUSIC',
+    'HAVIN FM',
+    'AZADI FM',
+    'DENGE CUDI',
+    'GOVEND',
   ];
   return radioKeywords.some((kw) => upper.includes(kw));
 }
 
-function classifyChannel(name: string, _originalGroup: string, isRadio: boolean): string {
+function classifyChannel(name: string, originalGroup: string, isRadio: boolean): string {
   const uName = name.toUpperCase();
+  const uCombined = `${name} ${originalGroup}`.toUpperCase();
+
+  const kurdishKeywords = [
+    'TRT KURD',
+    'KURDI',
+    'KURDÎ',
+    'KURDISTAN',
+    'KURDSAT',
+    'RUDAW',
+    'ZAGROS',
+    'WAAR',
+    'NRT ',
+    'NRT2',
+    'AVA MEDIA',
+    'AVAR TV',
+    'CHANNEL8',
+    'CHANNEL 8',
+    'STERK',
+    'JIN TV',
+    'MED MUZIK',
+    'MED NEWS',
+    'ARYEN',
+    'CIRA TV',
+    'KOMALA',
+    'AFARIN',
+    'MIXKURDY',
+    'KURD CHANNEL',
+    'RONAHI',
+    '4KURD',
+    'KURD1',
+    'HAVIN FM',
+    'AZADI FM',
+    'DENGE CUDI',
+    'AXA ROJAVA',
+    'SPEDA',
+    'GOVEND',
+    'SIRVAN PERWER',
+    'ŞİRVAN PERWER',
+    'MEZOPOTAMYA',
+    'PAYAM TV',
+    'KURDISH',
+    'KÜRTÇE',
+  ];
+  if (kurdishKeywords.some((kw) => uCombined.includes(kw))) {
+    return 'Kürtçe Yayınlar';
+  }
 
   if (isRadio) return 'Radyo & Müzik';
 
   const sporKeywords = [
     'SPOR',
     'SPORT',
+    'SPORTS',
+    'FUTBOL',
+    'FOOTBALL',
+    'SOCCER',
+    'EUROSPORT',
+    'ESPN',
+    'DAZN',
+    'BUNDESLIGA',
+    'FORMULA 1',
+    'MAGESPORT',
+    'MAGENTA SPORT',
+    'DYN SPORT',
+    'MOTORSPORT',
     'BEIN',
     'EXXEN',
     'TIVIBU',
     'TABII',
     'NBA',
+    'UFC',
     'FB TV',
     'GS TV',
     'GALATASARAY',
@@ -73,65 +146,51 @@ function classifyChannel(name: string, _originalGroup: string, isRadio: boolean)
     'IDMAN',
     'SARAN',
   ];
-  if (sporKeywords.some((kw) => uName.includes(kw))) return 'Spor';
+  if (sporKeywords.some((kw) => uCombined.includes(kw))) return 'Spor';
 
-  const haberKeywords = [
-    'HABER',
-    'NEWS',
-    'NTV',
-    'CNN',
-    'HALK',
-    'SOZCU',
-    'SZC',
-    'TELE 1',
-    'KRT',
-    'TRT',
-    'A HABER',
-    'BLOOMBERG',
-    'EKOTURK',
-    'EKO TURK',
-    'TBMM',
-    'ULUSAL',
-    'LIDER',
-    'FLASH',
-    'ÜLKE',
-    'ULKE',
-    'BENGU',
-    'TÜRKHABER',
+  const belgeselKeywords = [
+    'BELGESEL',
+    'NAT GEO',
+    'NATIONAL',
+    'DISCOVERY',
+    'HISTORY',
+    'VIASAT',
+    'BBC EARTH',
+    'LOVE NATURE',
+    'ANIMAL',
+    'YABAN',
+    'CIFTCI',
+    'AGRO',
+    'TARIH',
+    'DOCU',
+    'DOKU',
+    'DOCUMENTARY',
+    'WILDLIFE',
+    'SCIENCE',
+    'TERRA X',
+    'SPIEGEL TV',
+    'ZDF INFO',
+    'ZDFINFO',
+    'ARTE',
+    '3SAT',
+    'IZ TV',
+    'TLC',
+    'DMAX',
+    '24 KITCHEN',
   ];
-  if (
-    haberKeywords.some((kw) => uName.includes(kw)) &&
-    !uName.includes('BELGESEL') &&
-    !uName.includes('COCUK') &&
-    !uName.includes('MUZIK')
-  ) {
-    return 'Haber & Ulusal';
-  }
-
-  const sinemaKeywords = [
-    'SINEMA',
-    'S NEMA',
-    'MOVIE',
-    'CINE',
-    'FILM',
-    'SALON',
-    'BOX',
-    'FIX',
-    'PROTURK',
-    'MAX ',
-    'ENO ',
-    'YESILCAM',
-    'YEŞILÇAM',
-    'FX',
-    'DIZI',
-  ];
-  if (sinemaKeywords.some((kw) => uName.includes(kw))) return 'Sinema & Dizi';
+  if (belgeselKeywords.some((kw) => uCombined.includes(kw))) return 'Belgesel & Doğa';
 
   const cocukKeywords = [
     'COCUK',
     'ÇOCUK',
     'OCUK',
+    'KIDS',
+    'KIKA',
+    'SUPER RTL',
+    'TOGGO',
     'CARTOON',
+    'ANIMATION',
+    'ANIME',
     'DISNEY',
     'NICK',
     'BABY',
@@ -151,26 +210,79 @@ function classifyChannel(name: string, _originalGroup: string, isRadio: boolean)
     'PISI',
     'KUKULI',
   ];
-  if (cocukKeywords.some((kw) => uName.includes(kw))) return 'Çocuk & Eğitim';
+  if (cocukKeywords.some((kw) => uCombined.includes(kw))) return 'Çocuk & Eğitim';
 
-  const belgeselKeywords = [
-    'BELGESEL',
-    'NAT GEO',
-    'NATIONAL',
-    'DISCOVERY',
-    'HISTORY',
-    'VIASAT',
-    'BBC EARTH',
-    'LOVE NATURE',
-    'ANIMAL',
-    'YABAN',
-    'CIFTCI',
-    'AGRO',
-    'TARIH',
-    'DOCU',
-    'IZ TV',
+  const sinemaKeywords = [
+    'SINEMA',
+    'SİNEMA',
+    'S NEMA',
+    'MOVIE',
+    'MOVIES',
+    'CINEMA',
+    'CINE',
+    'KINO',
+    'FILM',
+    'BLUETV',
+    'NETFLIX',
+    'SALON',
+    'BOX',
+    'FIX',
+    'PROTURK',
+    'MAX ',
+    'ENO ',
+    'YESILCAM',
+    'YEŞILÇAM',
+    'FX',
+    'SYFY',
+    'WARNER',
+    'UNIVERSAL',
+    'TNT',
+    '13TH STREET',
+    'DIZI',
+    'SERIES',
   ];
-  if (belgeselKeywords.some((kw) => uName.includes(kw))) return 'Belgesel & Doğa';
+  if (sinemaKeywords.some((kw) => uCombined.includes(kw))) return 'Sinema & Dizi';
+
+  const haberKeywords = [
+    'HABER',
+    'NEWS',
+    'NACHRICHTEN',
+    'TAGESSCHAU',
+    'WELT',
+    'N-TV',
+    'PHOENIX',
+    'NTV',
+    'CNN',
+    'EURONEWS',
+    'BBC WORLD',
+    'HALK',
+    'SOZCU',
+    'SZC',
+    'TELE 1',
+    'KRT',
+    'TRT',
+    'A HABER',
+    'BLOOMBERG',
+    'EKOTURK',
+    'EKO TURK',
+    'TBMM',
+    'ULUSAL',
+    'LIDER',
+    'FLASH',
+    'ÜLKE',
+    'ULKE',
+    'BENGU',
+    'BENG T',
+    'TÜRKHABER',
+  ];
+  if (
+    haberKeywords.some((kw) => uCombined.includes(kw)) &&
+    !uName.includes('BELGESEL') &&
+    !uName.includes('COCUK') &&
+    !uName.includes('MUZIK')
+  ) {
+    return 'Haber & Ulusal';
+  }
 
   const ulusalKeywords = [
     'ATV',
@@ -273,6 +385,7 @@ export function parseM3u(content: string): Channel[] {
         originalGroup: currentGroup,
         smartCategory,
         isRadio,
+        qualityLabel: detectQualityLabel(name),
         userAgent: pipeUa ?? itemUserAgent ?? globalUserAgent,
         referer: pipeRef ?? itemReferer ?? globalReferer,
         origin: pipeOrig ?? itemOrigin ?? globalOrigin,
@@ -288,6 +401,20 @@ export function parseM3u(content: string): Channel[] {
   }
 
   return channels;
+}
+
+export function normalizeInputUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) {
+    return trimmed;
+  }
+  const clean = trimmed.replace(/^\/+/, '');
+  const preferHttps =
+    /^(?:raw\.githubusercontent\.com|github\.com|gist\.github\.com|[\w.-]+\.workers\.dev)/i.test(
+      clean
+    );
+  return `${preferHttps ? 'https' : 'http'}://${clean}`;
 }
 
 export function normalizeGithubRawUrl(rawUrl: string): string {
@@ -376,6 +503,7 @@ export function parseJsonPlaylist(
         originalGroup: currentGroup,
         smartCategory,
         isRadio,
+        qualityLabel: detectQualityLabel(name),
         userAgent: typeof item.userAgent === 'string' && item.userAgent ? item.userAgent : DEFAULT_UA,
         referer: typeof item.referer === 'string' ? item.referer : DEFAULT_REFERER,
         origin: typeof item.origin === 'string' ? item.origin : DEFAULT_ORIGIN,
@@ -444,17 +572,32 @@ export function mergeChannelLists(
 ): Channel[] {
   if (extras.length === 0) return primary;
   const seenUrls = new Set(primary.map((c) => c.streamUrl.trim()));
-  const seenNameUrl = new Set(
-    primary.map((c) => `${c.name.toLocaleLowerCase('tr-TR')}|${c.streamUrl.trim()}`)
-  );
-  const merged = [...primary];
+  const byNameIdx = new Map<string, number>();
+  const merged = primary.map((ch, idx) => {
+    byNameIdx.set(ch.name.toLocaleLowerCase('tr-TR').trim(), idx);
+    return ch;
+  });
 
   for (const ch of extras) {
     const urlKey = ch.streamUrl.trim();
-    const pairKey = `${ch.name.toLocaleLowerCase('tr-TR')}|${urlKey}`;
-    if (seenUrls.has(urlKey) || seenNameUrl.has(pairKey)) continue;
+    if (!urlKey || seenUrls.has(urlKey)) continue;
     seenUrls.add(urlKey);
-    seenNameUrl.add(pairKey);
+
+    const nameKey = ch.name.toLocaleLowerCase('tr-TR').trim();
+    const existingIdx = byNameIdx.get(nameKey);
+    if (existingIdx !== undefined) {
+      const existing = merged[existingIdx];
+      const existingBackups = existing.backupUrls ?? [];
+      if (!existingBackups.includes(urlKey) && existingBackups.length < 4) {
+        merged[existingIdx] = {
+          ...existing,
+          backupUrls: [...existingBackups, urlKey],
+        };
+      }
+      continue;
+    }
+
+    byNameIdx.set(nameKey, merged.length);
     merged.push(ch);
   }
   return merged;

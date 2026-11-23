@@ -1,0 +1,768 @@
+name: Eymen TV & Radyo APK Derle
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodlari Cek
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 Kur ve Web Paketini Derle
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Web Dosyalarini (Offline APK Paketi) Olustur
+        run: |
+          npm ci
+          npm run build
+
+      - name: Java 17 Kur
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Android TV & Telefon Projesi Olustur
+        run: |
+          mkdir -p android-apk/app/src/main/java/com/eymen/tvradyo
+          mkdir -p android-apk/app/src/main/res/values
+          mkdir -p android-apk/app/src/main/res/drawable
+          mkdir -p android-apk/app/src/main/res/drawable-xhdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-hdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-xhdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-anydpi-v26
+          mkdir -p android-apk/app/src/main/assets/www
+
+          if [ -d "dist" ]; then
+            cp -r dist/* android-apk/app/src/main/assets/www/
+          fi
+          if [ -f "public/playlist.m3u8" ]; then
+            cp public/playlist.m3u8 android-apk/app/src/main/assets/playlist.m3u8
+          fi
+
+          python3 -m pip install -q pillow >/dev/null 2>&1 || true
+
+          python3 - << 'PYEOF'
+          import math, os, struct, zlib
+
+          used_custom_fg = False
+          icon_src = 'public/app-icon.jpg'
+          if os.path.exists(icon_src):
+              try:
+                  from PIL import Image, ImageDraw, ImageOps
+                  base = Image.open(icon_src).convert('RGBA')
+
+                  def make_rounded_icon(sz):
+                      fitted = ImageOps.fit(base, (sz, sz), method=Image.Resampling.LANCZOS)
+                      mask = Image.new('L', (sz, sz), 0)
+                      draw = ImageDraw.Draw(mask)
+                      r = max(8, int(sz * 0.22))
+                      draw.rounded_rectangle([(0, 0), (sz - 1, sz - 1)], radius=r, fill=255)
+                      out = Image.new('RGBA', (sz, sz), (0, 0, 0, 0))
+                      out.paste(fitted, (0, 0), mask)
+                      return out
+
+                  for folder, sz in [
+                      ('mipmap-hdpi', 72),
+                      ('mipmap-xhdpi', 96),
+                      ('mipmap-xxhdpi', 144),
+                      ('mipmap-xxxhdpi', 192),
+                  ]:
+                      make_rounded_icon(sz).save(
+                          f'android-apk/app/src/main/res/{folder}/ic_launcher.png', 'PNG'
+                      )
+
+                  fg_size = 432
+                  inner_sz = int(fg_size * 0.68)
+                  fg_canvas = Image.new('RGBA', (fg_size, fg_size), (0, 0, 0, 0))
+                  inset_img = make_rounded_icon(inner_sz)
+                  offset = (fg_size - inner_sz) // 2
+                  fg_canvas.paste(inset_img, (offset, offset), inset_img)
+                  os.makedirs('android-apk/app/src/main/res/drawable-xxxhdpi', exist_ok=True)
+                  fg_canvas.save(
+                      'android-apk/app/src/main/res/drawable-xxxhdpi/ic_launcher_fg.png', 'PNG'
+                  )
+
+                  banner = ImageOps.fit(base, (320, 180), method=Image.Resampling.LANCZOS)
+                  banner.save('android-apk/app/src/main/res/drawable-xhdpi/tv_banner.png', 'PNG')
+                  used_custom_fg = True
+              except Exception as e:
+                  print('Custom icon Pillow step fallback:', e)
+
+          if not used_custom_fg:
+              def write_png(path, width, height, pixel_fn):
+                  raw = bytearray()
+                  for y in range(height):
+                      raw.append(0)
+                      for x in range(width):
+                          r, g, b, a = pixel_fn(x, y, width, height)
+                          raw.extend((r, g, b, a))
+                  def chunk(tag, data):
+                      return struct.pack('!I', len(data)) + tag + data + struct.pack('!I', zlib.crc32(tag + data) & 0xffffffff)
+                  ihdr = struct.pack('!IIBBBBB', width, height, 8, 6, 0, 0, 0)
+                  idat = zlib.compress(bytes(raw), 6)
+                  with open(path, 'wb') as f:
+                      f.write(b'\x89PNG\r\n\x1a\n')
+                      f.write(chunk(b'IHDR', ihdr))
+                      f.write(chunk(b'IDAT', idat))
+                      f.write(chunk(b'IEND', b''))
+
+              def clamp(v):
+                  return max(0, min(255, int(v)))
+
+              def mix(c1, c2, t):
+                  t = max(0.0, min(1.0, t))
+                  return (
+                      clamp(c1[0] + (c2[0] - c1[0]) * t),
+                      clamp(c1[1] + (c2[1] - c1[1]) * t),
+                      clamp(c1[2] + (c2[2] - c1[2]) * t),
+                      255
+                  )
+
+              def sdf_round_box(px, py, bx, by, r):
+                  qx = abs(px) - bx + r
+                  qy = abs(py) - by + r
+                  return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r
+
+              def icon_px(x, y, w, h):
+                  nx = ((x + 0.5) / w) * 2.0 - 1.0
+                  ny = ((y + 0.5) / h) * 2.0 - 1.0
+                  card_d = sdf_round_box(nx, ny, 0.90, 0.90, 0.24)
+                  if card_d > 0.02:
+                      return (0, 0, 0, 0)
+                  glow = max(0.0, 1.0 - math.hypot(nx * 0.95, ny + 0.15) * 0.9)
+                  bg = (
+                      clamp(10 + 18 * glow),
+                      clamp(14 + 18 * glow),
+                      clamp(24 + 28 * glow),
+                      255
+                  )
+                  if -0.025 <= card_d <= 0.0:
+                      bg = mix(bg, (56, 189, 248), 0.22)
+                  outer_tv = sdf_round_box(nx, ny + 0.04, 0.58, 0.42, 0.12)
+                  inner_tv = sdf_round_box(nx, ny + 0.04, 0.49, 0.33, 0.08)
+                  if outer_tv <= 0.0 and inner_tv >= 0.0:
+                      grad_t = (nx + 0.58) / 1.16
+                      return mix((245, 158, 11), (251, 191, 36), grad_t)
+                  if inner_tv < 0.0 and -0.16 <= nx <= 0.22:
+                      limit = 0.22 * (1.0 - (nx + 0.16) / 0.38)
+                      if abs(ny + 0.04) <= limit:
+                          return (248, 250, 252, 255)
+                  dist_sig = math.hypot(nx - 0.34, ny + 0.20)
+                  if 0.08 <= dist_sig <= 0.115 and nx > 0.34 and ny < -0.20:
+                      return (56, 189, 248, 255)
+                  if 0.145 <= dist_sig <= 0.18 and nx > 0.34 and ny < -0.20:
+                      return (34, 211, 238, 255)
+                  stand_d = sdf_round_box(nx, ny - 0.52, 0.24, 0.042, 0.025)
+                  if stand_d <= 0.0:
+                      return (245, 158, 11, 255)
+                  return bg
+
+              def banner_px(x, y, w, h):
+                  nx = x / w
+                  ny = y / h
+                  glow = max(0.0, 1.0 - math.hypot((nx - 0.25) * 1.4, (ny - 0.5) * 1.4))
+                  bg = (
+                      clamp(10 + 18 * glow + 10 * nx),
+                      clamp(15 + 16 * glow + 12 * nx),
+                      clamp(28 + 24 * glow + 16 * nx),
+                      255
+                  )
+                  if y < 5 or y >= h - 5:
+                      return mix((245, 158, 11), (56, 189, 248), nx)
+                  ex = (nx - 0.24) * (w / h) * 1.9
+                  ey = (ny - 0.50) * 1.9
+                  tv_outer = sdf_round_box(ex, ey, 0.46, 0.34, 0.10)
+                  tv_inner = sdf_round_box(ex, ey, 0.38, 0.26, 0.06)
+                  if tv_outer <= 0.0 and tv_inner >= 0.0:
+                      return (245, 158, 11, 255)
+                  if tv_inner < 0.0 and -0.14 <= ex <= 0.18:
+                      lim = 0.18 * (1.0 - (ex + 0.14) / 0.32)
+                      if abs(ey) <= lim:
+                          return (248, 250, 252, 255)
+                  sig = math.hypot(ex - 0.25, ey + 0.14)
+                  if 0.06 <= sig <= 0.095 and ex > 0.25 and ey < -0.14:
+                      return (56, 189, 248, 255)
+                  if 0.44 <= nx <= 0.86:
+                      if 0.31 <= ny <= 0.41:
+                          return (248, 250, 252, 255)
+                      if 0.47 <= ny <= 0.55 and nx <= 0.78:
+                          return mix((245, 158, 11), (251, 191, 36), (nx - 0.44) / 0.34)
+                      if 0.61 <= ny <= 0.67 and nx <= 0.69:
+                          return (56, 189, 248, 255)
+                  return bg
+
+              for folder, sz in [
+                  ('mipmap-hdpi', 72),
+                  ('mipmap-xhdpi', 96),
+                  ('mipmap-xxhdpi', 144),
+                  ('mipmap-xxxhdpi', 192),
+              ]:
+                  write_png(f'android-apk/app/src/main/res/{folder}/ic_launcher.png', sz, sz, icon_px)
+
+              write_png('android-apk/app/src/main/res/drawable-xhdpi/tv_banner.png', 320, 180, banner_px)
+          PYEOF
+
+          cat << 'EOF' > android-apk/app/src/main/res/values/colors.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <color name="ic_launcher_background">#0A0C10</color>
+          </resources>
+          EOF
+
+          cat << 'EOF' > android-apk/app/src/main/res/drawable/ic_launcher_foreground.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp"
+            android:height="108dp"
+            android:viewportWidth="108"
+            android:viewportHeight="108">
+            <path
+              android:fillColor="#00000000"
+              android:strokeColor="#F59E0B"
+              android:strokeWidth="5.5"
+              android:strokeLineJoin="round"
+              android:pathData="M28,32 L80,32 Q86,32 86,38 L86,68 Q86,74 80,74 L28,74 Q22,74 22,68 L22,38 Q22,32 28,32 Z" />
+            <path
+              android:fillColor="#F8FAFC"
+              android:pathData="M47,44 L67,53 L47,62 Z" />
+            <path
+              android:fillColor="#00000000"
+              android:strokeColor="#38BDF8"
+              android:strokeWidth="3.5"
+              android:strokeLineCap="round"
+              android:pathData="M68,26 A10,10 0 0,1 78,36 M68,20 A16,16 0 0,1 84,36" />
+            <path
+              android:fillColor="#F59E0B"
+              android:pathData="M38,80 L70,80 Q73,80 73,83 Q73,86 70,86 L38,86 Q35,86 35,83 Q35,80 38,80 Z" />
+          </vector>
+          EOF
+
+          if [ -f "android-apk/app/src/main/res/drawable-xxxhdpi/ic_launcher_fg.png" ]; then
+            cat << 'EOF' > android-apk/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@color/ic_launcher_background" />
+            <foreground android:drawable="@drawable/ic_launcher_fg" />
+          </adaptive-icon>
+          EOF
+          else
+            cat << 'EOF' > android-apk/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@color/ic_launcher_background" />
+            <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+          fi
+
+          cp android-apk/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml android-apk/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+
+          cat << 'EOF' > android-apk/settings.gradle.kts
+          pluginManagement {
+            repositories {
+              google()
+              mavenCentral()
+              gradlePluginPortal()
+            }
+          }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories {
+              google()
+              mavenCentral()
+            }
+          }
+          rootProject.name = "EymenTVRadyo"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > android-apk/gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat << 'EOF' > android-apk/build.gradle.kts
+          plugins {
+            id("com.android.application") version "8.5.2" apply false
+            id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat << 'EOF' > android-apk/app/build.gradle.kts
+          plugins {
+            id("com.android.application")
+            id("org.jetbrains.kotlin.android")
+          }
+          android {
+            namespace = "com.eymen.tvradyo"
+            compileSdk = 34
+            defaultConfig {
+              applicationId = "com.eymen.tvradyo"
+              minSdk = 24
+              targetSdk = 34
+              versionCode = 7
+              versionName = "3.3.0"
+            }
+            signingConfigs {
+              create("release") {
+                storeFile = file("eymen-release.jks")
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "eymen2026release"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "eymenkey"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "eymen2026release"
+              }
+            }
+            buildTypes {
+              release {
+                isMinifyEnabled = false
+                signingConfig = signingConfigs.getByName("release")
+              }
+            }
+            compileOptions {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+            }
+            kotlinOptions {
+              jvmTarget = "17"
+            }
+          }
+          dependencies {
+            implementation("androidx.core:core-ktx:1.13.1")
+            implementation("androidx.appcompat:appcompat:1.7.0")
+            implementation("androidx.webkit:webkit:1.11.0")
+          }
+          EOF
+
+          cat << 'EOF' > android-apk/app/src/main/res/values/strings.xml
+          <resources>
+            <string name="app_name">Eymen TV &amp; Radyo</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > android-apk/app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+            <uses-permission android:name="android.permission.WAKE_LOCK" />
+            <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+            <uses-feature android:name="android.software.leanback" android:required="false" />
+            <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+            <application
+              android:allowBackup="true"
+              android:icon="@mipmap/ic_launcher"
+              android:roundIcon="@mipmap/ic_launcher_round"
+              android:banner="@drawable/tv_banner"
+              android:label="@string/app_name"
+              android:usesCleartextTraffic="true"
+              android:hardwareAccelerated="true"
+              android:theme="@style/Theme.AppCompat.NoActionBar">
+              <activity
+                android:name=".MainActivity"
+                android:exported="true"
+                android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation"
+                android:launchMode="singleTask">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                  <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > android-apk/app/src/main/java/com/eymen/tvradyo/MainActivity.kt
+          package com.eymen.tvradyo
+
+          import android.annotation.SuppressLint
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Color
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.net.Uri
+          import android.os.Bundle
+          import android.os.Process
+          import android.view.KeyEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceError
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebResourceResponse
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import androidx.activity.OnBackPressedCallback
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import androidx.webkit.WebViewAssetLoader
+          import kotlin.system.exitProcess
+
+          class MainActivity : AppCompatActivity() {
+            private var webView: WebView? = null
+            private lateinit var rootLayout: FrameLayout
+            private lateinit var assetLoader: WebViewAssetLoader
+            private var customView: View? = null
+            private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+            private var webChromeHandler: WebChromeClient? = null
+            private var pageLoadedOk = false
+            private var isTerminating = false
+
+            companion object {
+              private const val PREFS = "eymen_tv_prefs"
+              private const val KEY_URL = "server_url"
+              private const val DEFAULT_URL = "https://ais-pre-kckse6f2vmufovjyyytuu2-13286586836.europe-west2.run.app"
+              private const val OFFLINE_LOCAL_URL = "https://appassets.androidplatform.net/assets/www/index.html"
+            }
+
+            inner class AndroidAppBridge {
+              @JavascriptInterface
+              fun exitApp() {
+                runOnUiThread {
+                  terminateCompletely()
+                }
+              }
+
+              @JavascriptInterface
+              fun openExternalUrl(url: String) {
+                runOnUiThread {
+                  try {
+                    if (url.startsWith("https://") || url.startsWith("http://")) {
+                      startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                  } catch (_: Throwable) {}
+                }
+              }
+            }
+
+            private fun isNetworkAvailable(): Boolean {
+              return try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val net = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(net) ?: return false
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+              } catch (_: Throwable) {
+                true
+              }
+            }
+
+            private fun destroyWebViewSafely() {
+              val wv = webView ?: return
+              webView = null
+              try {
+                wv.evaluateJavascript(
+                  "document.querySelectorAll('video,audio').forEach(function(m){try{m.pause();m.muted=true;m.removeAttribute('src');m.load();}catch(e){}});",
+                  null
+                )
+              } catch (_: Throwable) {}
+              try {
+                wv.stopLoading()
+                wv.onPause()
+                wv.pauseTimers()
+                wv.loadUrl("about:blank")
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.removeAllViews()
+                wv.destroy()
+              } catch (_: Throwable) {}
+            }
+
+            private fun terminateCompletely() {
+              if (isTerminating) return
+              isTerminating = true
+              try {
+                customView?.let { rootLayout.removeView(it) }
+                customView = null
+                customViewCallback?.onCustomViewHidden()
+                customViewCallback = null
+              } catch (_: Throwable) {}
+              destroyWebViewSafely()
+              try {
+                finishAndRemoveTask()
+              } catch (_: Throwable) {
+                finishAffinity()
+              }
+              Process.killProcess(Process.myPid())
+              exitProcess(0)
+            }
+
+            @SuppressLint("SetJavaScriptEnabled")
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+              assetLoader = WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+                .build()
+
+              rootLayout = FrameLayout(this).apply {
+                setBackgroundColor(Color.parseColor("#0a0c10"))
+              }
+              val wv = WebView(this).apply {
+                setBackgroundColor(Color.parseColor("#0a0c10"))
+                isFocusable = true
+                isFocusableInTouchMode = true
+                setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                requestFocus()
+              }
+              webView = wv
+
+              val settings = wv.settings
+              settings.javaScriptEnabled = true
+              settings.domStorageEnabled = true
+              settings.databaseEnabled = true
+              settings.cacheMode = WebSettings.LOAD_DEFAULT
+              settings.mediaPlaybackRequiresUserGesture = false
+              settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+              settings.useWideViewPort = true
+              settings.loadWithOverviewMode = true
+              settings.userAgentString = settings.userAgentString.replace("; wv", "")
+
+              wv.addJavascriptInterface(AndroidAppBridge(), "Android")
+
+              val chromeClient = object : WebChromeClient() {
+                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                  if (customView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                  }
+                  customView = view
+                  customViewCallback = callback
+                  wv.visibility = View.GONE
+                  rootLayout.addView(view, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                  ))
+                  setImmersiveSystemBars(true)
+                }
+
+                override fun onHideCustomView() {
+                  customView?.let { rootLayout.removeView(it) }
+                  customView = null
+                  customViewCallback?.onCustomViewHidden()
+                  customViewCallback = null
+                  wv.visibility = View.VISIBLE
+                  setImmersiveSystemBars(false)
+                }
+              }
+              webChromeHandler = chromeClient
+              wv.webChromeClient = chromeClient
+
+              wv.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                  view: WebView,
+                  request: WebResourceRequest
+                ): WebResourceResponse? {
+                  return assetLoader.shouldInterceptRequest(request.url)
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                  super.onPageFinished(view, url)
+                  if (url != null && url.startsWith("http")) {
+                    pageLoadedOk = true
+                  }
+                }
+
+                override fun onReceivedError(
+                  view: WebView?,
+                  request: WebResourceRequest?,
+                  error: WebResourceError?
+                ) {
+                  if (request?.isForMainFrame == true) {
+                    val reqUrl = request.url.toString()
+                    if (!reqUrl.startsWith(OFFLINE_LOCAL_URL)) {
+                      // Fall back immediately to bundled local offline web assets (zero white screen)
+                      wv.loadUrl(OFFLINE_LOCAL_URL)
+                    } else {
+                      pageLoadedOk = false
+                      showUrlDialog("Sunucuya baglanilamadi. Yayin adresini kontrol edin:")
+                    }
+                  }
+                }
+
+                override fun onReceivedHttpError(
+                  view: WebView?,
+                  request: WebResourceRequest?,
+                  errorResponse: WebResourceResponse?
+                ) {
+                  if (request?.isForMainFrame == true && (errorResponse?.statusCode ?: 200) >= 400) {
+                    val reqUrl = request.url.toString()
+                    if (!reqUrl.startsWith(OFFLINE_LOCAL_URL)) {
+                      wv.loadUrl(OFFLINE_LOCAL_URL)
+                    }
+                  }
+                }
+              }
+
+              rootLayout.addView(wv, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+              ))
+              setContentView(rootLayout)
+
+              onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                  handleBackNavigation()
+                }
+              })
+
+              val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+              val savedUrl = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
+              if (isNetworkAvailable()) {
+                wv.loadUrl(savedUrl)
+              } else {
+                wv.loadUrl(OFFLINE_LOCAL_URL)
+              }
+            }
+
+            private fun setImmersiveSystemBars(enable: Boolean) {
+              val controller = WindowCompat.getInsetsController(window, rootLayout)
+              if (enable) {
+                controller.systemBarsBehavior =
+                  WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+              } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+              }
+            }
+
+            private fun handleBackNavigation() {
+              if (customView != null) {
+                webChromeHandler?.onHideCustomView()
+                return
+              }
+              val wv = webView
+              if (!pageLoadedOk || wv == null) {
+                terminateCompletely()
+                return
+              }
+              wv.evaluateJavascript(
+                "(function(){ if(!document.getElementById('root') || !document.getElementById('root').children.length){ return 'NO_APP'; } window.dispatchEvent(new KeyboardEvent('keydown',{key:'GoBack',code:'GoBack',keyCode:4,which:4,bubbles:true,cancelable:true})); return 'OK'; })()"
+              ) { result ->
+                if (result != null && result.contains("NO_APP")) {
+                  terminateCompletely()
+                }
+              }
+            }
+
+            private fun showUrlDialog(title: String) {
+              val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+              val input = EditText(this).apply {
+                setText(prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL)
+              }
+              AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage("Eymen TV & Radyo · Hazirlayan: Mehmet Cengiz Akdag")
+                .setView(input)
+                .setPositiveButton("Ac") { _, _ ->
+                  val url = input.text.toString().trim()
+                  if (url.startsWith("http")) {
+                    prefs.edit().putString(KEY_URL, url).apply()
+                    webView?.loadUrl(url)
+                  }
+                }
+                .setNegativeButton("Cevrimdisi Ac") { _, _ -> webView?.loadUrl(OFFLINE_LOCAL_URL) }
+                .setNeutralButton("Kapat") { _, _ -> terminateCompletely() }
+                .show()
+            }
+
+            override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+              if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
+                showUrlDialog("Sunucu Adresi Ayarla")
+                return true
+              }
+              if (keyCode == KeyEvent.KEYCODE_BACK) {
+                handleBackNavigation()
+                return true
+              }
+              return super.onKeyDown(keyCode, event)
+            }
+
+            override fun onDestroy() {
+              destroyWebViewSafely()
+              super.onDestroy()
+            }
+          }
+          EOF
+
+      - name: Release Keystore Hazirla ve Imzali APK Derle
+        working-directory: android-apk
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > app/eymen-release.jks
+          else
+            keytool -genkeypair -v -keystore app/eymen-release.jks \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias "${KEY_ALIAS:-eymenkey}" \
+              -storepass "${KEYSTORE_PASSWORD:-eymen2026release}" \
+              -keypass "${KEY_PASSWORD:-eymen2026release}" \
+              -dname "CN=Eymen TV Radyo, OU=Media, O=Mehmet Cengiz Akdag, L=Istanbul, C=TR"
+          fi
+
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+          mkdir -p "$SDK_ROOT/licenses"
+          printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n" > "$SDK_ROOT/licenses/android-sdk-license"
+          printf "84831b9409646a918e30573bab4c9c91346d8abd\n" > "$SDK_ROOT/licenses/android-sdk-preview-license"
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+
+          curl -sSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/g.zip
+          unzip -qo /tmp/g.zip -d /tmp
+          /tmp/gradle-8.7/bin/gradle assembleRelease --no-daemon --stacktrace
+
+          mkdir -p release
+          cp app/build/outputs/apk/release/app-release.apk release/EymenTVRadyo-v3.3.0-release.apk
+
+          APKSIGNER=$(find "$SDK_ROOT/build-tools" -name apksigner 2>/dev/null | head -n 1 || true)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --verbose release/EymenTVRadyo-v3.3.0-release.apk
+          fi
+
+      - name: Imzali Release APK Dosyasini Artifact Olarak Yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: EymenTVRadyo-Release-APK
+          path: android-apk/release/EymenTVRadyo-v3.3.0-release.apk
+          retention-days: 30
+
+      - name: GitHub Release Yayinla (Etiket veya Manuel Tetiklemede)
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v3.3.0
+          name: Eymen TV & Radyo v3.3.0
+          body: |
+            - Çevrimdışı açılış desteği (gömülü web paketi + WebViewAssetLoader)
+            - Otomatik yedek yayın geçişi (backupUrls failover)
+            - Ses seviyesi kaydırıcısı, ses parçası ve altyazı seçici
+            - EPG program hatırlatıcı ve Son İzlenenler sekmesi
+            - İmzalı Release APK derlemesi
+          files: android-apk/release/EymenTVRadyo-v3.3.0-release.apk
+          draft: false
+          prerelease: false

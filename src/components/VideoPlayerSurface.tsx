@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState, useCallback, type TouchEvent } from 'react';
 import Hls from 'hls.js';
 import {
+  AudioLines,
   CalendarClock,
+  Captions,
+  Heart,
   LayoutGrid,
   List,
   Maximize,
   Minimize,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
   Play,
   Ratio,
@@ -17,9 +24,11 @@ import {
   Volume2,
   VolumeX,
   X,
+  Zap,
 } from 'lucide-react';
 import type {
   AspectMode,
+  BufferPreset,
   CategoryName,
   Channel,
   EpgNowNext,
@@ -28,8 +37,16 @@ import type {
   RadioEffectMode,
 } from '../types/channel';
 import { computeEpgProgress, formatEpgTime, lookupEpgForChannel } from '../utils/epg';
+import { buildHlsConfig, getHlsProfileSummary } from '../utils/hlsConfig';
+import {
+  getChannelPerfKey,
+  type ChannelPerfEvent,
+  type ChannelPerfStats,
+} from '../utils/channelPerformance';
 import { RadioVisualizerOverlay } from './RadioVisualizerOverlay';
 import { ChannelRowItem } from './ChannelRowItem';
+import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
+import { logAppError } from '../utils/errorLogger';
 
 interface VideoPlayerSurfaceProps {
   currentChannel: Channel | null;
@@ -42,6 +59,8 @@ interface VideoPlayerSurfaceProps {
   isFullscreen: boolean;
   pauseSignal: number;
   hudHideSeconds?: number;
+  menuAutoCloseSeconds?: number;
+  bufferPreset?: BufferPreset;
   controlsSize?: PlayerControlsSize;
   highContrastControls?: boolean;
   seekStepSeconds?: number;
@@ -51,7 +70,11 @@ interface VideoPlayerSurfaceProps {
   radioBackgroundImage?: string;
   epgMap?: Record<string, EpgNowNext>;
   vodResumeTime?: number;
+  lowRamMode?: boolean;
+  acceleratedPlaybackMode?: boolean;
+  onToggleAcceleratedMode?: () => void;
   onVodProgress?: (channelId: string, currentTime: number, duration: number) => void;
+  onPlaybackStateChange?: (playing: boolean) => void;
   onSelectChannel: (channel: Channel) => void;
   onSelectCategory: (cat: CategoryName) => void;
   onSearchChange: (q: string) => void;
@@ -60,8 +83,35 @@ interface VideoPlayerSurfaceProps {
   onToggleAspect: () => void;
   onEnableMultiScreen?: () => void;
   onOpenEpg?: () => void;
+  isSidePanelOpen?: boolean;
+  onToggleSidePanel?: () => void;
+  isLeftVodOpen?: boolean;
+  onToggleLeftVod?: () => void;
+  perfMap?: Record<string, ChannelPerfStats>;
+  onChannelPerfEvent?: (channel: Channel, event: ChannelPerfEvent) => void;
   onPrev: () => void;
   onNext: () => void;
+}
+
+function isBackKey(e: KeyboardEvent): boolean {
+  return (
+    e.key === 'Escape' ||
+    e.key === 'GoBack' ||
+    e.key === 'BrowserBack' ||
+    e.key === 'Back' ||
+    e.key === 'Backspace' ||
+    e.keyCode === 4 ||
+    e.keyCode === 461
+  );
+}
+
+function isSelectKey(e: KeyboardEvent): boolean {
+  return (
+    e.key === 'Enter' ||
+    e.key === 'NumpadEnter' ||
+    e.key === 'Select' ||
+    e.key === 'DPadCenter'
+  );
 }
 
 export function VideoPlayerSurface({
@@ -74,7 +124,9 @@ export function VideoPlayerSurface({
   aspectMode,
   isFullscreen,
   pauseSignal,
-  hudHideSeconds = 4,
+  hudHideSeconds = 5,
+  menuAutoCloseSeconds = 5,
+  bufferPreset = 'balanced',
   controlsSize = 'large',
   highContrastControls = true,
   seekStepSeconds = 15,
@@ -84,7 +136,11 @@ export function VideoPlayerSurface({
   radioBackgroundImage = '',
   epgMap = {},
   vodResumeTime = 0,
+  lowRamMode = true,
+  acceleratedPlaybackMode = true,
+  onToggleAcceleratedMode,
   onVodProgress,
+  onPlaybackStateChange,
   onSelectChannel,
   onSelectCategory,
   onSearchChange,
@@ -93,6 +149,12 @@ export function VideoPlayerSurface({
   onToggleAspect,
   onEnableMultiScreen,
   onOpenEpg,
+  isSidePanelOpen = true,
+  onToggleSidePanel,
+  isLeftVodOpen = true,
+  onToggleLeftVod,
+  perfMap = {},
+  onChannelPerfEvent,
   onPrev,
   onNext,
 }: VideoPlayerSurfaceProps) {
@@ -100,43 +162,105 @@ export function VideoPlayerSurface({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const drawerListRef = useRef<HTMLDivElement | null>(null);
+  const drawerCatsRef = useRef<HTMLDivElement | null>(null);
+  const drawerQuickTabsRef = useRef<HTMLDivElement | null>(null);
+  const drawerSearchRef = useRef<HTMLInputElement | null>(null);
+  const topBarRef = useRef<HTMLDivElement | null>(null);
+  const bottomBarRef = useRef<HTMLDivElement | null>(null);
+  const playBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [isBuffering, setIsBuffering] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('eymen_player_volume_v1'));
+      return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 1;
+    } catch {
+      return 1;
+    }
+  });
   const [needsUnmutePrompt, setNeedsUnmutePrompt] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [streamAttemptIdx, setStreamAttemptIdx] = useState(0);
+  const [audioTracks, setAudioTracks] = useState<Array<{ id: number; name: string }>>([]);
+  const [activeAudioTrack, setActiveAudioTrack] = useState<number>(-1);
+  const [subtitleTracks, setSubtitleTracks] = useState<Array<{ id: number; name: string }>>([]);
+  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<number>(-1);
   const [vodTime, setVodTime] = useState(0);
   const [vodDuration, setVodDuration] = useState(0);
   const [seekToast, setSeekToast] = useState<string | null>(null);
   const lastSavedTickRef = useRef(0);
   const didResumeSeekRef = useRef(false);
   const seekToastTimerRef = useRef<number | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number } | null>(null);
+  const prevChannelIdRef = useRef<string | null>(null);
 
-  // Fullscreen HUD & Channel List Drawer state (Mi Box & Mobile Touch)
+  // Channel performance tracking refs (per tune attempt)
+  const loadStartTimeRef = useRef<number>(0);
+  const reportedStartupRef = useRef<boolean>(false);
+  const reportedErrorForAttemptRef = useRef<boolean>(false);
+  const lastStallReportRef = useRef<number>(0);
+  const onChannelPerfRef = useRef(onChannelPerfEvent);
+  onChannelPerfRef.current = onChannelPerfEvent;
+
+  // Fullscreen & Normal Mode HUD + Channel List Drawer state (5s auto-hide/close)
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const prevDrawerOpenRef = useRef(false);
   const [hudVisible, setHudVisible] = useState(true);
-  const [focusedIndex, setFocusedIndex] = useState(0);
   const [drawerLimit, setDrawerLimit] = useState(80);
   const hudTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastTouchTimeRef = useRef<number>(0);
+  const didSwipeRef = useRef<boolean>(false);
+  const onPrevRef = useRef(onPrev);
+  onPrevRef.current = onPrev;
+  const onNextRef = useRef(onNext);
+  onNextRef.current = onNext;
+  const acceleratedModeRef = useRef(acceleratedPlaybackMode);
+  acceleratedModeRef.current = acceleratedPlaybackMode;
+  const bufferPresetRef = useRef(bufferPreset);
+  bufferPresetRef.current = bufferPreset;
+  const lowRamModeRef = useRef(lowRamMode);
+  lowRamModeRef.current = lowRamMode;
+
+  const isVodMode = Boolean(currentChannel?.isVod);
+
+  useEffect(() => {
+    onPlaybackStateChange?.(isPlaying);
+  }, [isPlaying, onPlaybackStateChange]);
+
+  // Auto-close fullscreen channel drawer after menuAutoCloseSeconds (5s) of no interaction
+  useIdleAutoClose(
+    isFullscreen && drawerOpen,
+    menuAutoCloseSeconds,
+    () => {
+      setDrawerOpen(false);
+    },
+    false,
+    true
+  );
 
   const resetHudTimer = useCallback(() => {
     setHudVisible(true);
     if (hudTimerRef.current !== null) {
       window.clearTimeout(hudTimerRef.current);
+      hudTimerRef.current = null;
     }
-    if (isFullscreen && !drawerOpen && !playerError) {
+    const shouldAutoHide =
+      (isFullscreen || isPlaying) && !drawerOpen && !playerError;
+    if (shouldAutoHide) {
+      const waitSec = Math.max(2, hudHideSeconds);
       hudTimerRef.current = window.setTimeout(() => {
         setHudVisible(false);
-      }, Math.max(2, hudHideSeconds) * 1000);
+      }, waitSec * 1000);
     }
-  }, [isFullscreen, drawerOpen, playerError, hudHideSeconds]);
+  }, [isFullscreen, isPlaying, drawerOpen, playerError, hudHideSeconds]);
 
   useEffect(() => {
-    if (!isFullscreen) {
-      setDrawerOpen(false);
+    if (!isFullscreen) setDrawerOpen(false);
+    if (!isFullscreen && !isPlaying) {
       setHudVisible(true);
       if (hudTimerRef.current !== null) {
         window.clearTimeout(hudTimerRef.current);
@@ -144,30 +268,46 @@ export function VideoPlayerSurface({
     } else {
       resetHudTimer();
     }
-  }, [isFullscreen, resetHudTimer]);
+  }, [isFullscreen, isPlaying, resetHudTimer]);
 
   useEffect(() => {
     setDrawerLimit(80);
-    setFocusedIndex(0);
   }, [selectedCategory, searchQuery]);
 
+  // Focus active channel when Fullscreen Drawer opens & restore Play focus when it closes
   useEffect(() => {
-    if (drawerOpen && currentChannel) {
-      const idx = channels.findIndex((c) => c.id === currentChannel.id);
-      if (idx >= 0) {
-        setFocusedIndex(idx);
+    const wasOpen = prevDrawerOpenRef.current;
+    prevDrawerOpenRef.current = drawerOpen;
+    if (!drawerOpen) {
+      if (wasOpen && isFullscreen) {
+        setHudVisible(true);
+        const restoreId = window.setTimeout(() => {
+          playBtnRef.current?.focus();
+        }, 40);
+        return () => window.clearTimeout(restoreId);
+      }
+      return;
+    }
+    const id = window.setTimeout(() => {
+      if (currentChannel) {
+        const idx = channels.findIndex((c) => c.id === currentChannel.id);
         if (idx >= drawerLimit) {
           setDrawerLimit(idx + 40);
         }
-        window.setTimeout(() => {
-          const el = drawerListRef.current?.querySelector(
-            `[data-channel-id="${CSS.escape(currentChannel.id)}"]`
-          );
-          el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        }, 50);
+        const el = drawerListRef.current?.querySelector<HTMLElement>(
+          `[data-channel-id="${CSS.escape(currentChannel.id)}"]`
+        );
+        if (el) {
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          el.focus();
+          return;
+        }
       }
-    }
-  }, [drawerOpen, currentChannel, channels, drawerLimit]);
+      const firstEl = drawerListRef.current?.querySelector<HTMLElement>('[data-channel-id]');
+      firstEl?.focus();
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [drawerOpen, isFullscreen, currentChannel, channels, drawerLimit]);
 
   useEffect(() => {
     if (pauseSignal > 0 && videoRef.current) {
@@ -175,7 +315,29 @@ export function VideoPlayerSurface({
     }
   }, [pauseSignal]);
 
-  // Load & play stream via /api/stream proxy
+  // Reset backup attempt index when switching channels
+  useEffect(() => {
+    const chId = currentChannel?.id ?? null;
+    if (prevChannelIdRef.current !== chId) {
+      prevChannelIdRef.current = chId;
+      setStreamAttemptIdx(0);
+    }
+  }, [currentChannel?.id]);
+
+  // Apply persisted volume slider smoothly
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.volume = volume;
+    }
+    try {
+      localStorage.setItem('eymen_player_volume_v1', String(volume));
+    } catch {
+      // ignore
+    }
+  }, [volume]);
+
+  // Load & play stream via /api/stream proxy (with automatic backupUrls failover)
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !currentChannel) return;
@@ -185,20 +347,61 @@ export function VideoPlayerSurface({
       hlsRef.current = null;
     }
 
+    const candidates = [
+      currentChannel.streamUrl,
+      ...(currentChannel.backupUrls ?? []),
+    ].filter(Boolean);
+    const activeUrl =
+      candidates[Math.min(streamAttemptIdx, Math.max(0, candidates.length - 1))] ||
+      currentChannel.streamUrl;
+
     setPlayerError(null);
     setIsBuffering(true);
     setNeedsUnmutePrompt(false);
+    setAudioTracks([]);
+    setActiveAudioTrack(-1);
+    setSubtitleTracks([]);
+    setActiveSubtitleTrack(-1);
     setVodTime(0);
     setVodDuration(0);
     lastSavedTickRef.current = 0;
     didResumeSeekRef.current = false;
 
+    loadStartTimeRef.current = performance.now();
+    reportedStartupRef.current = false;
+    reportedErrorForAttemptRef.current = false;
+    lastStallReportRef.current = 0;
+    onChannelPerfRef.current?.(currentChannel, { type: 'load_start' });
+
     const params = new URLSearchParams();
-    params.set('url', currentChannel.streamUrl);
+    params.set('url', activeUrl);
     if (currentChannel.userAgent) params.set('ua', currentChannel.userAgent);
     if (currentChannel.referer) params.set('referer', currentChannel.referer);
     if (currentChannel.origin) params.set('origin', currentChannel.origin);
     const proxiedUrl = `/api/stream?${params.toString()}`;
+
+    const triggerFailoverOrError = (errorText: string) => {
+      if (streamAttemptIdx + 1 < candidates.length) {
+        const nextIdx = streamAttemptIdx + 1;
+        setSeekToast(
+          `Ana yayın yanıt vermedi, yedek kaynağa geçiliyor (${nextIdx + 1}/${candidates.length})`
+        );
+        if (seekToastTimerRef.current !== null) {
+          window.clearTimeout(seekToastTimerRef.current);
+        }
+        seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 2200);
+        setStreamAttemptIdx(nextIdx);
+        return true;
+      }
+      setPlayerError(errorText);
+      setIsBuffering(false);
+      logAppError('player', `${currentChannel.name}: ${errorText}`, activeUrl);
+      if (!reportedErrorForAttemptRef.current) {
+        reportedErrorForAttemptRef.current = true;
+        onChannelPerfRef.current?.(currentChannel, { type: 'error' });
+      }
+      return false;
+    };
 
     const attemptPlay = async () => {
       try {
@@ -222,42 +425,117 @@ export function VideoPlayerSurface({
       }
     };
 
-    const lowerStream = currentChannel.streamUrl.toLowerCase();
+    const lowerStream = activeUrl.toLowerCase();
+    const cleanLower = lowerStream.split('?')[0].split('#')[0];
     const looksLikeHls =
+      cleanLower.endsWith('.m3u8') ||
+      cleanLower.endsWith('.m3u') ||
       lowerStream.includes('.m3u8') ||
-      lowerStream.includes('hls') ||
+      lowerStream.includes('/hls/') ||
       lowerStream.includes('workers.dev') ||
       currentChannel.codec === 'HLS';
+    const isKnownDirectFile =
+      /\.(mp4|mkv|webm|mov|avi|mp3|aac|ogg|flac|wav|opus|ts)$/i.test(cleanLower);
     const isDirectStream =
       (currentChannel.isRadio && !looksLikeHls) ||
-      (Boolean(currentChannel.isVod) && !looksLikeHls);
+      (Boolean(currentChannel.isVod) && !looksLikeHls) ||
+      (isKnownDirectFile && !looksLikeHls);
 
     const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+
+    let netRecoverAttempts = 0;
+    let stallCount = 0;
+    let recoveryTimer: number | null = null;
+    const maxNetRetries = acceleratedModeRef.current ? 4 : 3;
 
     if (isDirectStream) {
       video.src = proxiedUrl;
       void attemptPlay();
     } else if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 30,
-        manifestLoadingTimeOut: 15000,
-        levelLoadingTimeOut: 15000,
-        fragLoadingTimeOut: 20000,
-      });
+      const hls = new Hls(
+        buildHlsConfig({
+          acceleratedPlaybackMode: acceleratedModeRef.current,
+          bufferPreset: bufferPresetRef.current,
+          lowRamMode: lowRamModeRef.current,
+          isMultiScreen: false,
+        })
+      );
       hlsRef.current = hls;
 
       hls.loadSource(proxiedUrl);
       hls.attachMedia(video);
 
+      const syncTracks = () => {
+        const aTracks = (hls.audioTracks || []).map((t, i) => ({
+          id: i,
+          name: t.name || t.lang?.toUpperCase() || `Ses ${i + 1}`,
+        }));
+        setAudioTracks(aTracks);
+        setActiveAudioTrack(hls.audioTrack);
+
+        const sTracks = (hls.subtitleTracks || []).map((t, i) => ({
+          id: i,
+          name: t.name || t.lang?.toUpperCase() || `Altyazı ${i + 1}`,
+        }));
+        setSubtitleTracks(sTracks);
+        setActiveSubtitleTrack(hls.subtitleTrack);
+      };
+
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setPlayerError(null);
+        netRecoverAttempts = 0;
+        syncTracks();
         void attemptPlay();
       });
 
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncTracks);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncTracks);
+
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        stallCount = 0;
+        setIsBuffering(false);
+      });
+
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
+        if (!data.fatal) {
+          if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+            setIsBuffering(true);
+            stallCount++;
+            const nowTs = Date.now();
+            if (
+              reportedStartupRef.current &&
+              nowTs - lastStallReportRef.current >= 4500
+            ) {
+              lastStallReportRef.current = nowTs;
+              onChannelPerfRef.current?.(currentChannel, { type: 'stall' });
+            }
+            if (stallCount >= 2 && hls.levels.length > 1) {
+              hls.nextLevel = 0;
+            }
+            if (video.buffered.length > 0 && !video.paused) {
+              try {
+                const end = video.buffered.end(video.buffered.length - 1);
+                if (end - video.currentTime > 0.4) {
+                  video.currentTime += 0.15;
+                }
+              } catch {
+                // ignore seek nudge errors
+              }
+            }
+            hls.startLoad();
+          }
+          return;
+        }
+        if (
+          data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
+          data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
+        ) {
+          hls.destroy();
+          hlsRef.current = null;
+          video.src = proxiedUrl;
+          void attemptPlay();
+          return;
+        }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           if (currentChannel.isRadio) {
             hls.destroy();
@@ -266,15 +544,24 @@ export function VideoPlayerSurface({
             void attemptPlay();
             return;
           }
-          setPlayerError('Yayın bağlanamadı (Ağ hatası). Alternatif yayını deneyin.');
-          setIsBuffering(false);
+          if (netRecoverAttempts < maxNetRetries) {
+            netRecoverAttempts++;
+            setIsBuffering(true);
+            if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+            recoveryTimer = window.setTimeout(() => {
+              if (hlsRef.current === hls) {
+                hls.startLoad();
+              }
+            }, netRecoverAttempts * (acceleratedModeRef.current ? 650 : 900));
+            return;
+          }
           hls.destroy();
+          triggerFailoverOrError('Yayın bağlanamadı (Ağ hatası). Alternatif yayını deneyin.');
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hls.recoverMediaError();
         } else {
-          setPlayerError('Yayın bağlanamadı. Alternatif yayını deneyin.');
-          setIsBuffering(false);
           hls.destroy();
+          triggerFailoverOrError('Yayın bağlanamadı. Alternatif yayını deneyin.');
         }
       });
     } else if (canNativeHls) {
@@ -288,69 +575,197 @@ export function VideoPlayerSurface({
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentChannel.name,
-        artist: `${currentChannel.smartCategory} · CANLI`,
+        artist: `${currentChannel.smartCategory} · ${currentChannel.isVod ? 'FİLM / DİZİ' : 'CANLI'}`,
         album: 'Eymen TV & Radyo',
         artwork: currentChannel.logoUrl
           ? [
               {
-                src: `/api/logo?url=${encodeURIComponent(currentChannel.logoUrl)}`,
+                src: `/api/logo?url=${encodeURIComponent(
+                  currentChannel.logoUrl
+                )}&name=${encodeURIComponent(currentChannel.name)}${
+                  currentChannel.isRadio ? '&radio=1' : ''
+                }`,
                 sizes: '256x256',
                 type: 'image/png',
               },
             ]
-          : [],
+          : [
+              {
+                src: `/api/logo?name=${encodeURIComponent(currentChannel.name)}${
+                  currentChannel.isRadio ? '&radio=1' : ''
+                }`,
+                sizes: '256x256',
+                type: 'image/png',
+              },
+            ],
       });
-      navigator.mediaSession.setActionHandler('previoustrack', onPrev);
-      navigator.mediaSession.setActionHandler('nexttrack', onNext);
+      navigator.mediaSession.setActionHandler('previoustrack', () => onPrevRef.current());
+      navigator.mediaSession.setActionHandler('nexttrack', () => onNextRef.current());
       navigator.mediaSession.setActionHandler('play', () => void video.play());
       navigator.mediaSession.setActionHandler('pause', () => video.pause());
     }
 
     return () => {
+      if (recoveryTimer !== null) {
+        window.clearTimeout(recoveryTimer);
+      }
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      video.pause();
       video.removeAttribute('src');
       video.load();
     };
-  }, [currentChannel, retryCount, onPrev, onNext]);
+  }, [currentChannel, retryCount, streamAttemptIdx]);
+
+  // Dynamically update active HLS buffer & ABR parameters when Accelerated Mode or Buffer Preset toggles
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    const nextCfg = buildHlsConfig({
+      acceleratedPlaybackMode,
+      bufferPreset,
+      lowRamMode,
+      isMultiScreen: false,
+    });
+    Object.assign(hls.config, nextCfg);
+  }, [acceleratedPlaybackMode, bufferPreset, lowRamMode]);
+
+  const togglePlayPause = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play();
+    } else {
+      video.pause();
+    }
+    resetHudTimer();
+  }, [resetHudTimer]);
+
+  const seekBySeconds = useCallback(
+    (delta: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const seekable = video.seekable;
+      let minT = 0;
+      let maxT =
+        Number.isFinite(video.duration) && video.duration > 0
+          ? video.duration
+          : video.currentTime;
+      if (seekable && seekable.length > 0) {
+        minT = seekable.start(0);
+        maxT = seekable.end(seekable.length - 1);
+      }
+      if (maxT > minT + 1) {
+        const target = Math.min(maxT, Math.max(minT, video.currentTime + delta));
+        video.currentTime = target;
+        setVodTime(target);
+        setSeekToast(`${delta > 0 ? '+' : ''}${delta} sn`);
+      } else {
+        setSeekToast('Canlı yayında ileri/geri sarma yalnızca arşivde çalışır');
+      }
+      if (seekToastTimerRef.current !== null) {
+        window.clearTimeout(seekToastTimerRef.current);
+      }
+      seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 1500);
+      resetHudTimer();
+    },
+    [resetHudTimer]
+  );
 
   // Keyboard / Mi Box TV Remote navigation
   useEffect(() => {
+    const moveFocusInRow = (container: HTMLElement | null, dir: -1 | 0 | 1): boolean => {
+      if (!container) return false;
+      const buttons = Array.from(
+        container.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')
+      );
+      if (buttons.length === 0) return false;
+      const idx = buttons.indexOf(document.activeElement as HTMLElement);
+      if (idx === -1) {
+        buttons[0].focus();
+        return true;
+      }
+      const nextIdx = Math.max(0, Math.min(buttons.length - 1, idx + dir));
+      buttons[nextIdx].focus();
+      return true;
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const isTyping =
         target &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
-          target.isContentEditable);
+          target.isContentEditable) &&
+        (target as HTMLInputElement).type !== 'range';
+
+      // Global TV Media & Channel keys (work in both normal & fullscreen)
+      if (e.key === 'MediaTrackNext' || e.key === 'ChannelUp' || e.key === 'F9') {
+        e.preventDefault();
+        onNext();
+        resetHudTimer();
+        return;
+      }
+      if (e.key === 'MediaTrackPrevious' || e.key === 'ChannelDown' || e.key === 'F10') {
+        e.preventDefault();
+        onPrev();
+        resetHudTimer();
+        return;
+      }
+      if (
+        e.key === 'MediaPlayPause' ||
+        e.key === 'MediaPlay' ||
+        e.key === 'MediaPause'
+      ) {
+        e.preventDefault();
+        const video = videoRef.current;
+        if (video) {
+          if (e.key === 'MediaPlay') void video.play();
+          else if (e.key === 'MediaPause') video.pause();
+          else togglePlayPause();
+        }
+        return;
+      }
+      if (e.key === 'MediaFastForward') {
+        e.preventDefault();
+        seekBySeconds(seekStepSeconds);
+        return;
+      }
+      if (e.key === 'MediaRewind') {
+        e.preventDefault();
+        seekBySeconds(-seekStepSeconds);
+        return;
+      }
 
       if (isTyping) {
-        if (e.key === 'Escape' && drawerOpen) {
+        if (isBackKey(e) && drawerOpen) {
           e.preventDefault();
+          e.stopPropagation();
           setDrawerOpen(false);
+        } else if (e.key === 'ArrowDown' && drawerOpen) {
+          e.preventDefault();
+          const firstRow = drawerListRef.current?.querySelector<HTMLElement>('[data-channel-id]');
+          firstRow?.focus();
         }
         return;
       }
 
+      if (!isFullscreen) {
+        if ((e.key === 'f' || e.key === 'F') && currentChannel) {
+          e.preventDefault();
+          onToggleFullscreen(true);
+        }
+        return;
+      }
+
+      // Fullscreen Mi Box TV Remote Navigation
       resetHudTimer();
 
-      if (e.key === 'MediaTrackNext' || e.key === 'ChannelUp') {
+      if (isBackKey(e)) {
         e.preventDefault();
-        onNext();
-        return;
-      }
-      if (e.key === 'MediaTrackPrevious' || e.key === 'ChannelDown') {
-        e.preventDefault();
-        onPrev();
-        return;
-      }
-
-      if (!isFullscreen) return;
-
-      if (e.key === 'Escape' || e.key === 'GoBack') {
-        e.preventDefault();
+        e.stopPropagation();
         if (drawerOpen) {
           setDrawerOpen(false);
         } else {
@@ -364,7 +779,8 @@ export function VideoPlayerSurface({
         e.key === 'L' ||
         e.key === 'm' ||
         e.key === 'M' ||
-        e.key === 'ContextMenu'
+        e.key === 'ContextMenu' ||
+        e.key === 'Guide'
       ) {
         e.preventDefault();
         setDrawerOpen((prev) => !prev);
@@ -372,160 +788,312 @@ export function VideoPlayerSurface({
       }
 
       if (drawerOpen) {
-        const currentVisibleCount = Math.min(channels.length, drawerLimit);
+        const active = document.activeElement as HTMLElement | null;
+        const rows = Array.from(
+          drawerListRef.current?.querySelectorAll<HTMLElement>('[data-channel-id]') ?? []
+        );
+        const rowIdx = active ? rows.indexOf(active) : -1;
+        const inQuickTabs = Boolean(active && drawerQuickTabsRef.current?.contains(active));
+        const inCatBar = Boolean(active && drawerCatsRef.current?.contains(active));
+
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setFocusedIndex((prev) => {
-            const next = Math.min(prev + 1, channels.length - 1);
-            if (next >= drawerLimit - 5) setDrawerLimit((l) => l + 50);
-            const ch = channels[next];
-            if (ch) {
-              drawerListRef.current
-                ?.querySelector(`[data-channel-id="${CSS.escape(ch.id)}"]`)
-                ?.scrollIntoView({ block: 'nearest' });
+          if (inQuickTabs) {
+            const firstCat =
+              drawerCatsRef.current?.querySelector<HTMLElement>('[data-selected="true"]') ??
+              drawerCatsRef.current?.querySelector<HTMLElement>('button');
+            if (firstCat) firstCat.focus();
+            else rows[0]?.focus();
+          } else if (inCatBar || rowIdx === -1) {
+            rows[0]?.focus();
+            rows[0]?.scrollIntoView({ block: 'nearest' });
+          } else {
+            const nextIdx = Math.min(rowIdx + 1, rows.length - 1);
+            if (nextIdx >= rows.length - 6 && drawerLimit < channels.length) {
+              setDrawerLimit((l) => Math.min(l + 60, channels.length));
             }
-            return next;
-          });
+            const targetRow = rows[nextIdx];
+            targetRow?.focus();
+            targetRow?.scrollIntoView({ block: 'nearest' });
+          }
         } else if (e.key === 'ArrowUp') {
           e.preventDefault();
-          setFocusedIndex((prev) => {
-            const next = Math.max(prev - 1, 0);
-            const ch = channels[next];
-            if (ch) {
-              drawerListRef.current
-                ?.querySelector(`[data-channel-id="${CSS.escape(ch.id)}"]`)
-                ?.scrollIntoView({ block: 'nearest' });
-            }
-            return next;
-          });
+          if (rowIdx > 0) {
+            const prevRow = rows[rowIdx - 1];
+            prevRow?.focus();
+            prevRow?.scrollIntoView({ block: 'nearest' });
+          } else if (rowIdx === 0) {
+            const activeCat =
+              drawerCatsRef.current?.querySelector<HTMLElement>('[data-selected="true"]') ??
+              drawerCatsRef.current?.querySelector<HTMLElement>('button') ??
+              drawerQuickTabsRef.current?.querySelector<HTMLElement>('button');
+            activeCat?.focus();
+          } else if (inCatBar) {
+            const activeQuick =
+              drawerQuickTabsRef.current?.querySelector<HTMLElement>('[data-selected="true"]') ??
+              drawerQuickTabsRef.current?.querySelector<HTMLElement>('button');
+            activeQuick?.focus();
+          } else if (inQuickTabs) {
+            drawerSearchRef.current?.focus();
+          }
         } else if (e.key === 'ArrowLeft') {
           e.preventDefault();
-          setDrawerOpen(false);
-        } else if (e.key === 'ArrowRight' && visibleCategories.length > 0) {
-          e.preventDefault();
-          const idx = visibleCategories.indexOf(selectedCategory);
-          const nextCat =
-            visibleCategories[(idx + 1) % visibleCategories.length];
-          onSelectCategory(nextCat);
-        } else if (e.key === 'Enter' && currentVisibleCount > 0) {
-          e.preventDefault();
-          const ch = channels[focusedIndex];
-          if (ch) {
-            onSelectChannel(ch);
+          if (inQuickTabs) {
+            moveFocusInRow(drawerQuickTabsRef.current, -1);
+          } else if (inCatBar) {
+            moveFocusInRow(drawerCatsRef.current, -1);
+          } else {
+            setDrawerOpen(false);
           }
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          if (inQuickTabs) {
+            moveFocusInRow(drawerQuickTabsRef.current, 1);
+          } else if (inCatBar) {
+            moveFocusInRow(drawerCatsRef.current, 1);
+          } else if (visibleCategories.length > 0) {
+            const idx = visibleCategories.indexOf(selectedCategory);
+            const nextCat =
+              visibleCategories[(idx + 1) % visibleCategories.length];
+            onSelectCategory(nextCat);
+          }
+        } else if (isSelectKey(e) && active && !containerRef.current?.contains(active)) {
+          e.preventDefault();
+          rows[0]?.focus();
         }
         return;
       }
 
+      // Fullscreen Video Mode (drawer closed)
+      const active = document.activeElement as HTMLElement | null;
+      const isInTopBar = Boolean(active && topBarRef.current?.contains(active));
+      const isInBottomBar = Boolean(active && bottomBarRef.current?.contains(active));
+
+      if (isInTopBar || isInBottomBar) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          moveFocusInRow(isInTopBar ? topBarRef.current : bottomBarRef.current, -1);
+          return;
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          moveFocusInRow(isInTopBar ? topBarRef.current : bottomBarRef.current, 1);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (isInBottomBar) {
+            moveFocusInRow(topBarRef.current, 0);
+          } else {
+            (active as HTMLElement)?.blur();
+            setHudVisible(false);
+          }
+          return;
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (isInTopBar) {
+            if (playBtnRef.current) {
+              playBtnRef.current.focus();
+            } else {
+              moveFocusInRow(bottomBarRef.current, 0);
+            }
+          } else {
+            (active as HTMLElement)?.blur();
+            setHudVisible(false);
+          }
+          return;
+        }
+        if (isSelectKey(e)) {
+          if (e.key === 'Select' || e.key === 'DPadCenter') {
+            e.preventDefault();
+            active?.click();
+          }
+          return;
+        }
+      }
+
       if (e.key === 'ArrowUp' || e.key === 'PageUp') {
         e.preventDefault();
-        onPrev();
+        if (isVodMode) {
+          setHudVisible(true);
+          window.setTimeout(() => playBtnRef.current?.focus(), 20);
+        } else {
+          onPrev();
+        }
       } else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
         e.preventDefault();
-        onNext();
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        setDrawerOpen(true);
-      } else if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        const video = videoRef.current;
-        if (video) {
-          if (video.paused) void video.play();
-          else video.pause();
+        if (isVodMode) {
+          setDrawerOpen(true);
+        } else {
+          onNext();
         }
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (isVodMode) {
+          seekBySeconds(-seekStepSeconds);
+        } else {
+          setDrawerOpen(true);
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (isVodMode) {
+          seekBySeconds(seekStepSeconds);
+        } else {
+          setHudVisible(true);
+          window.setTimeout(() => playBtnRef.current?.focus(), 20);
+        }
+      } else if (isSelectKey(e)) {
+        e.preventDefault();
+        if (!hudVisible) {
+          setHudVisible(true);
+          window.setTimeout(() => playBtnRef.current?.focus(), 20);
+        } else {
+          togglePlayPause();
+        }
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        togglePlayPause();
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         onToggleFullscreen(false);
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [
     isFullscreen,
+    isVodMode,
+    hudVisible,
     drawerOpen,
     channels,
     drawerLimit,
-    focusedIndex,
+    currentChannel,
     selectedCategory,
     visibleCategories,
+    seekStepSeconds,
     onNext,
     onPrev,
-    onSelectChannel,
     onSelectCategory,
     onToggleFullscreen,
     resetHudTimer,
+    togglePlayPause,
+    seekBySeconds,
   ]);
-
-  const togglePlayPause = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      void video.play();
-    } else {
-      video.pause();
-    }
-    resetHudTimer();
-  };
-
-  const seekBySeconds = (delta: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const seekable = video.seekable;
-    let minT = 0;
-    let maxT = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : video.currentTime;
-    if (seekable && seekable.length > 0) {
-      minT = seekable.start(0);
-      maxT = seekable.end(seekable.length - 1);
-    }
-    if (maxT > minT + 1) {
-      const target = Math.min(maxT, Math.max(minT, video.currentTime + delta));
-      video.currentTime = target;
-      setVodTime(target);
-      setSeekToast(`${delta > 0 ? '+' : ''}${delta} sn`);
-    } else {
-      setSeekToast('Canlı yayında ileri/geri sarma yalnızca arşivde çalışır');
-    }
-    if (seekToastTimerRef.current !== null) {
-      window.clearTimeout(seekToastTimerRef.current);
-    }
-    seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 1500);
-    resetHudTimer();
-  };
 
   const toggleMute = () => {
     const video = videoRef.current;
     if (!video) return;
     video.muted = !video.muted;
     setIsMuted(video.muted);
-    if (!video.muted) setNeedsUnmutePrompt(false);
+    if (!video.muted) {
+      setNeedsUnmutePrompt(false);
+      if (volume === 0) setVolume(0.75);
+    }
+    resetHudTimer();
+  };
+
+  const cycleAudioTrack = () => {
+    const hls = hlsRef.current;
+    if (!hls || audioTracks.length < 2) return;
+    const nextIdx = (activeAudioTrack + 1) % audioTracks.length;
+    hls.audioTrack = nextIdx;
+    setActiveAudioTrack(nextIdx);
+    setSeekToast(`Ses: ${audioTracks[nextIdx]?.name ?? nextIdx + 1}`);
+    if (seekToastTimerRef.current !== null) window.clearTimeout(seekToastTimerRef.current);
+    seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 1600);
+    resetHudTimer();
+  };
+
+  const cycleSubtitleTrack = () => {
+    const hls = hlsRef.current;
+    if (!hls || subtitleTracks.length === 0) return;
+    const nextIdx = activeSubtitleTrack + 1 >= subtitleTracks.length ? -1 : activeSubtitleTrack + 1;
+    hls.subtitleTrack = nextIdx;
+    setActiveSubtitleTrack(nextIdx);
+    const label = nextIdx === -1 ? 'Kapalı' : subtitleTracks[nextIdx]?.name ?? `${nextIdx + 1}`;
+    setSeekToast(`Altyazı: ${label}`);
+    if (seekToastTimerRef.current !== null) window.clearTimeout(seekToastTimerRef.current);
+    seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 1600);
     resetHudTimer();
   };
 
   const handleTouchStart = (e: TouchEvent<HTMLDivElement>) => {
-    if (!isFullscreen || drawerOpen) return;
+    lastTouchTimeRef.current = Date.now();
+    didSwipeRef.current = false;
+    if (drawerOpen) return;
     const t = e.touches[0];
+    if (!t) return;
     touchStartRef.current = { x: t.clientX, y: t.clientY };
   };
 
+  const handleTouchMove = (e: TouchEvent<HTMLDivElement>) => {
+    lastTouchTimeRef.current = Date.now();
+    if (drawerOpen || !touchStartRef.current) return;
+    const t = e.touches[0];
+    if (!t) return;
+    if (
+      Math.abs(t.clientX - touchStartRef.current.x) > 12 ||
+      Math.abs(t.clientY - touchStartRef.current.y) > 12
+    ) {
+      didSwipeRef.current = true;
+    }
+  };
+
   const handleTouchEnd = (e: TouchEvent<HTMLDivElement>) => {
-    if (!isFullscreen || drawerOpen || !touchStartRef.current) return;
+    lastTouchTimeRef.current = Date.now();
+    if (drawerOpen || !touchStartRef.current) return;
     const t = e.changedTouches[0];
+    if (!t) return;
     const dx = t.clientX - touchStartRef.current.x;
     const dy = t.clientY - touchStartRef.current.y;
     touchStartRef.current = null;
 
+    // Double-tap seek on VOD (Mobile UX)
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && isVodMode) {
+      const now = Date.now();
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (
+        lastTapRef.current &&
+        now - lastTapRef.current.time < 300 &&
+        rect
+      ) {
+        const relX = t.clientX - rect.left;
+        if (relX < rect.width * 0.4) {
+          didSwipeRef.current = true;
+          seekBySeconds(-seekStepSeconds);
+          lastTapRef.current = null;
+          return;
+        } else if (relX > rect.width * 0.6) {
+          didSwipeRef.current = true;
+          seekBySeconds(seekStepSeconds);
+          lastTapRef.current = null;
+          return;
+        }
+      }
+      lastTapRef.current = { time: now, x: t.clientX };
+    }
+
+    if (!isFullscreen) return;
+
     if (Math.abs(dx) > 65 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      didSwipeRef.current = true;
       if (dx > 0) {
         setDrawerOpen(true);
+      } else if (isVodMode) {
+        seekBySeconds(seekStepSeconds);
       } else {
         onNext();
       }
       resetHudTimer();
     } else if (Math.abs(dy) > 65 && Math.abs(dy) > Math.abs(dx) * 1.4) {
-      if (dy < 0) onNext();
-      else onPrev();
-      resetHudTimer();
+      didSwipeRef.current = true;
+      if (!isVodMode) {
+        if (dy < 0) onNext();
+        else onPrev();
+        resetHudTimer();
+      }
     }
   };
 
@@ -539,7 +1107,19 @@ export function VideoPlayerSurface({
   const aspectLabel =
     aspectMode === 'fit' ? 'Sığdır' : aspectMode === 'fill' ? 'Doldur' : 'Yakınlaştır';
 
-  const showControls = !isFullscreen || hudVisible || drawerOpen || !!playerError;
+  const showControls =
+    (!isFullscreen && !isPlaying) ||
+    hudVisible ||
+    drawerOpen ||
+    !!playerError;
+
+  const hlsSummary = getHlsProfileSummary({
+    acceleratedPlaybackMode,
+    bufferPreset,
+    lowRamMode,
+    isMultiScreen: false,
+  });
+
   const currentEpg = currentChannel
     ? lookupEpgForChannel(epgMap, currentChannel.name)
     : null;
@@ -584,19 +1164,30 @@ export function VideoPlayerSurface({
   return (
     <div
       ref={containerRef}
-      onMouseMove={resetHudTimer}
+      onMouseMove={() => {
+        if (Date.now() - lastTouchTimeRef.current < 900) return;
+        resetHudTimer();
+      }}
       onClick={() => {
-        if (isFullscreen && !drawerOpen) {
-          setHudVisible((v) => !v);
-          resetHudTimer();
+        if (didSwipeRef.current) {
+          didSwipeRef.current = false;
+          return;
+        }
+        if ((isFullscreen || isPlaying || currentChannel) && !drawerOpen) {
+          setHudVisible((v) => {
+            const next = !v;
+            if (next) resetHudTimer();
+            return next;
+          });
         }
       }}
       onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      className={`relative bg-black overflow-hidden select-none ${
+      className={`relative bg-black overflow-hidden select-none touch-manipulation ${
         isFullscreen
           ? 'fixed inset-0 z-50 w-screen h-dvh'
-          : 'w-full aspect-video rounded-none'
+          : 'w-full h-full rounded-none'
       }`}
     >
       <video
@@ -634,18 +1225,57 @@ export function VideoPlayerSurface({
             }
           }
         }}
-        onWaiting={() => setIsBuffering(true)}
+        onWaiting={() => {
+          setIsBuffering(true);
+          const nowTs = Date.now();
+          if (
+            currentChannel &&
+            reportedStartupRef.current &&
+            nowTs - lastStallReportRef.current >= 4500
+          ) {
+            lastStallReportRef.current = nowTs;
+            onChannelPerfRef.current?.(currentChannel, { type: 'stall' });
+          }
+        }}
         onPlaying={() => {
           setIsBuffering(false);
           setIsPlaying(true);
           setPlayerError(null);
+          if (currentChannel && !reportedStartupRef.current) {
+            reportedStartupRef.current = true;
+            const startupMs = Math.max(
+              50,
+              Math.round(performance.now() - loadStartTimeRef.current)
+            );
+            onChannelPerfRef.current?.(currentChannel, {
+              type: 'playing',
+              startupMs,
+            });
+          }
         }}
         onPause={() => setIsPlaying(false)}
         onCanPlay={() => setIsBuffering(false)}
         onError={() => {
           if (currentChannel) {
+            const totalBackups = currentChannel.backupUrls?.length ?? 0;
+            if (streamAttemptIdx < totalBackups) {
+              const nextIdx = streamAttemptIdx + 1;
+              setSeekToast(`Yedek kaynağa geçiliyor (${nextIdx + 1}/${totalBackups + 1})`);
+              if (seekToastTimerRef.current !== null) {
+                window.clearTimeout(seekToastTimerRef.current);
+              }
+              seekToastTimerRef.current = window.setTimeout(() => setSeekToast(null), 2200);
+              setStreamAttemptIdx(nextIdx);
+              return;
+            }
             setIsBuffering(false);
-            setPlayerError('Yayın bağlanamadı. Alternatif yayını deneyin.');
+            const msg = 'Yayın bağlanamadı. Alternatif yayını deneyin.';
+            setPlayerError(msg);
+            logAppError('player', `${currentChannel.name}: ${msg}`, currentChannel.streamUrl);
+            if (!reportedErrorForAttemptRef.current) {
+              reportedErrorForAttemptRef.current = true;
+              onChannelPerfRef.current?.(currentChannel, { type: 'error' });
+            }
           }
         }}
         className={`w-full h-full bg-black ${objectFitClass}`}
@@ -671,6 +1301,7 @@ export function VideoPlayerSurface({
 
       {/* Top OSD Bar */}
       <div
+        ref={topBarRef}
         onClick={(e) => e.stopPropagation()}
         className={`absolute top-0 inset-x-0 z-20 flex items-center justify-between gap-2 px-3 py-2.5 bg-gradient-to-b from-black/90 via-black/55 to-transparent transition-opacity duration-200 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -704,12 +1335,52 @@ export function VideoPlayerSurface({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {onToggleAcceleratedMode && (
+            <button
+              type="button"
+              onClick={() => {
+                const nextVal = !acceleratedPlaybackMode;
+                onToggleAcceleratedMode();
+                setSeekToast(
+                  nextVal
+                    ? 'Hızlandırılmış Oynatma Açıldı (Anti-Donma HLS)'
+                    : 'Standart Oynatma Modu'
+                );
+                if (seekToastTimerRef.current !== null) {
+                  window.clearTimeout(seekToastTimerRef.current);
+                }
+                seekToastTimerRef.current = window.setTimeout(
+                  () => setSeekToast(null),
+                  1800
+                );
+                resetHudTimer();
+              }}
+              title={
+                acceleratedPlaybackMode
+                  ? 'Hızlandırılmış Oynatma Modu: Açık (Kapatmak için tıkla)'
+                  : 'Hızlandırılmış Oynatma Modu: Kapalı (Açmak için tıkla)'
+              }
+              className={`${btnPadCls} ${
+                acceleratedPlaybackMode
+                  ? 'bg-[var(--accent)] text-[var(--accent-ink)] border border-[var(--accent)] shadow-lg'
+                  : `${frameCls} text-white/80`
+              } flex items-center gap-1 transition-colors`}
+            >
+              <Zap className={iconSizeCls} />
+              <span className="hidden md:inline text-[11px] font-extrabold">
+                {acceleratedPlaybackMode ? 'Hızlı Mod' : 'Normal'}
+              </span>
+            </button>
+          )}
           {onEnableMultiScreen && (
             <button
               type="button"
-              onClick={onEnableMultiScreen}
+              onClick={() => {
+                resetHudTimer();
+                onEnableMultiScreen();
+              }}
               title="Çoklu Ekran Modu (2'li / 4'lü)"
-              className={`${btnPadCls} ${frameCls} text-[var(--accent)] transition-colors focus:outline-none`}
+              className={`${btnPadCls} ${frameCls} text-[var(--accent)] transition-colors`}
             >
               <LayoutGrid className={iconSizeCls} />
             </button>
@@ -717,33 +1388,132 @@ export function VideoPlayerSurface({
           {onOpenEpg && currentChannel && !currentChannel.isRadio && (
             <button
               type="button"
-              onClick={onOpenEpg}
+              onClick={() => {
+                resetHudTimer();
+                onOpenEpg();
+              }}
               title="Yayın Akışı (EPG)"
-              className={`${btnPadCls} ${frameCls} text-[var(--accent)] transition-colors focus:outline-none`}
+              className={`${btnPadCls} ${frameCls} text-[var(--accent)] transition-colors`}
             >
               <CalendarClock className={iconSizeCls} />
             </button>
           )}
           <button
             type="button"
-            onClick={onToggleAspect}
+            onClick={() => {
+              resetHudTimer();
+              onToggleAspect();
+            }}
             title={`En Boy Oranı: ${aspectLabel}`}
-            className={`${btnPadCls} ${frameCls} text-white transition-colors focus:outline-none`}
+            className={`${btnPadCls} ${frameCls} text-white transition-colors`}
           >
             <Ratio className={iconSizeCls} />
           </button>
-          <button
-            type="button"
-            onClick={toggleMute}
-            title={isMuted ? 'Sesi Aç' : 'Sessiz'}
-            className={`${btnPadCls} ${frameCls} text-white transition-colors focus:outline-none`}
-          >
-            {isMuted ? (
-              <VolumeX className={`${iconSizeCls} text-[var(--accent)]`} />
-            ) : (
-              <Volume2 className={iconSizeCls} />
-            )}
-          </button>
+          {audioTracks.length > 1 && (
+            <button
+              type="button"
+              onClick={cycleAudioTrack}
+              title={`Ses Parçası: ${audioTracks[activeAudioTrack]?.name ?? 'Varsayılan'}`}
+              className={`${btnPadCls} ${frameCls} flex items-center gap-1 text-[var(--accent)] transition-colors`}
+            >
+              <AudioLines className={iconSizeCls} />
+              <span className="hidden lg:inline text-[11px] font-bold">
+                {audioTracks[activeAudioTrack]?.name ?? 'Ses'}
+              </span>
+            </button>
+          )}
+          {subtitleTracks.length > 0 && (
+            <button
+              type="button"
+              onClick={cycleSubtitleTrack}
+              title={`Altyazı: ${activeSubtitleTrack === -1 ? 'Kapalı' : subtitleTracks[activeSubtitleTrack]?.name ?? 'Açık'}`}
+              className={`${btnPadCls} ${
+                activeSubtitleTrack >= 0
+                  ? 'bg-[var(--accent)] text-[var(--accent-ink)] border border-[var(--accent)]'
+                  : `${frameCls} text-white`
+              } flex items-center gap-1 transition-colors`}
+            >
+              <Captions className={iconSizeCls} />
+            </button>
+          )}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleMute}
+              title={isMuted ? 'Sesi Aç' : 'Sessiz'}
+              className={`${btnPadCls} ${frameCls} text-white transition-colors`}
+            >
+              {isMuted || volume === 0 ? (
+                <VolumeX className={`${iconSizeCls} text-[var(--accent)]`} />
+              ) : (
+                <Volume2 className={iconSizeCls} />
+              )}
+            </button>
+            <input
+              type="range"
+              aria-label="Ses Seviyesi"
+              min={0}
+              max={1}
+              step={0.05}
+              value={isMuted ? 0 : volume}
+              onChange={(e) => {
+                const nextVol = Number(e.target.value);
+                setVolume(nextVol);
+                if (videoRef.current) {
+                  videoRef.current.volume = nextVol;
+                  if (nextVol > 0 && videoRef.current.muted) {
+                    videoRef.current.muted = false;
+                    setIsMuted(false);
+                    setNeedsUnmutePrompt(false);
+                  }
+                }
+                resetHudTimer();
+              }}
+              className="hidden sm:block w-16 md:w-20 h-1.5 accent-[var(--accent)] cursor-pointer"
+            />
+          </div>
+          {!isFullscreen && onToggleLeftVod && (
+            <button
+              type="button"
+              onClick={() => {
+                resetHudTimer();
+                onToggleLeftVod();
+              }}
+              title={isLeftVodOpen ? 'Sol Film & Dizi Panelini Gizle' : 'Sol Film & Dizi Panelini Aç'}
+              aria-label={isLeftVodOpen ? 'Film & Dizi Gizle' : 'Film & Dizi Aç'}
+              className={`hidden md:flex ${btnPadCls} ${frameCls} items-center gap-1.5 text-[var(--accent)] transition-colors whitespace-nowrap`}
+            >
+              {isLeftVodOpen ? (
+                <PanelLeftClose className={iconSizeCls} />
+              ) : (
+                <PanelLeftOpen className={iconSizeCls} />
+              )}
+              <span className="hidden lg:inline text-[11px] font-bold">
+                Film &amp; Dizi
+              </span>
+            </button>
+          )}
+          {!isFullscreen && onToggleSidePanel && (
+            <button
+              type="button"
+              onClick={() => {
+                resetHudTimer();
+                onToggleSidePanel();
+              }}
+              title={isSidePanelOpen ? 'Sağ Kanal & Radyo Menüsünü Kapat' : 'Sağ Kanal & Radyo Menüsünü Aç'}
+              aria-label={isSidePanelOpen ? 'Sağ Menüyü Kapat' : 'Sağ Menüyü Aç'}
+              className={`${btnPadCls} ${frameCls} flex items-center gap-1.5 text-[var(--accent)] transition-colors whitespace-nowrap`}
+            >
+              {isSidePanelOpen ? (
+                <PanelRightClose className={iconSizeCls} />
+              ) : (
+                <PanelRightOpen className={iconSizeCls} />
+              )}
+              <span className="hidden lg:inline text-[11px] font-bold">
+                Kanallar &amp; Radyo
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -755,17 +1525,22 @@ export function VideoPlayerSurface({
             e.stopPropagation();
             toggleMute();
           }}
-          className="absolute bottom-20 right-3 z-25 flex items-center gap-2 px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-extrabold shadow-xl hover:bg-[var(--accent-hover)] focus:outline-none"
+          className="absolute bottom-20 right-3 z-25 flex items-center gap-2 px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-extrabold shadow-xl hover:bg-[var(--accent-hover)]"
         >
           <Volume2 className="w-5 h-5" />
           <span>Sesi Aç</span>
         </button>
       )}
 
-      {/* Buffering Spinner */}
+      {/* Buffering Spinner with Buffer Label */}
       {isBuffering && !playerError && (
-        <div className="absolute inset-0 z-15 flex items-center justify-center pointer-events-none">
+        <div className="absolute inset-0 z-15 flex flex-col items-center justify-center gap-2 pointer-events-none">
           <div className="w-12 h-12 rounded-full border-4 border-[var(--accent)]/25 border-t-[var(--accent)] animate-spin" />
+          <div className="px-3 py-1 rounded-lg bg-black/75 border border-white/15 text-[11px] font-bold text-[var(--accent)]">
+            {acceleratedPlaybackMode
+              ? `Hızlandırılmış Tampon (${hlsSummary.maxBufferLength}sn)...`
+              : 'Tampon Hazırlanıyor...'}
+          </div>
         </div>
       )}
 
@@ -797,9 +1572,10 @@ export function VideoPlayerSurface({
         </div>
       )}
 
-      {/* Large Bottom Transport & Fullscreen Control Dock (Normal + Fullscreen) */}
+      {/* Large Bottom Transport & Fullscreen Control Dock */}
       {!drawerOpen && (
         <div
+          ref={bottomBarRef}
           onClick={(e) => e.stopPropagation()}
           className={`absolute bottom-0 inset-x-0 z-20 px-3 sm:px-4 pt-6 pb-2.5 sm:pb-3 bg-gradient-to-t from-black/95 via-black/70 to-transparent space-y-2 transition-opacity duration-200 ${
             showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -855,13 +1631,12 @@ export function VideoPlayerSurface({
 
           {/* Main Visible Large Transport Row */}
           <div className="flex items-center justify-between gap-2">
-            {/* Left: Channel List (Fullscreen) or Previous Channel */}
             <div className="flex items-center gap-1.5">
               {isFullscreen ? (
                 <button
                   type="button"
                   onClick={() => setDrawerOpen(true)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-xl bg-black/80 border border-[var(--accent)]/70 text-white text-xs sm:text-sm font-bold hover:bg-black`}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/80 border border-[var(--accent)]/70 text-white text-xs sm:text-sm font-bold hover:bg-black"
                 >
                   <List className={`${iconSizeCls} text-[var(--accent)]`} />
                   <span className="hidden sm:inline">
@@ -873,21 +1648,20 @@ export function VideoPlayerSurface({
                   type="button"
                   onClick={onPrev}
                   title="Önceki Kanal"
-                  className={`${btnPadCls} ${frameCls} text-white transition-colors focus:outline-none`}
+                  className={`${btnPadCls} ${frameCls} text-white transition-colors`}
                 >
                   <SkipBack className={iconSizeCls} />
                 </button>
               )}
             </div>
 
-            {/* Center: Rewind + BIG Play/Pause + Fast Forward */}
             <div className="flex items-center gap-2 sm:gap-3">
               {isFullscreen && (
                 <button
                   type="button"
                   onClick={onPrev}
                   title="Önceki Kanal"
-                  className={`${btnPadCls} ${frameCls} text-white transition-colors focus:outline-none`}
+                  className={`${btnPadCls} ${frameCls} text-white transition-colors`}
                 >
                   <SkipBack className={iconSizeCls} />
                 </button>
@@ -897,7 +1671,7 @@ export function VideoPlayerSurface({
                 type="button"
                 onClick={() => seekBySeconds(-seekStepSeconds)}
                 title={`${seekStepSeconds} saniye geri sar`}
-                className={`${btnPadCls} ${frameCls} text-white flex items-center gap-1 transition-colors focus:outline-none`}
+                className={`${btnPadCls} ${frameCls} text-white flex items-center gap-1 transition-colors`}
               >
                 <RotateCcw className={iconSizeCls} />
                 <span className="font-mono-nums text-[11px] sm:text-xs font-extrabold text-[var(--accent)]">
@@ -906,10 +1680,12 @@ export function VideoPlayerSurface({
               </button>
 
               <button
+                ref={playBtnRef}
                 type="button"
+                data-player-play="true"
                 onClick={togglePlayPause}
                 title={isPlaying ? 'Duraklat' : 'Oynat'}
-                className={`${playBtnCls} bg-[var(--accent)] text-[var(--accent-ink)] shadow-xl flex items-center justify-center hover:bg-[var(--accent-hover)] transition-transform active:scale-95 focus:outline-none`}
+                className={`${playBtnCls} bg-[var(--accent)] text-[var(--accent-ink)] shadow-xl flex items-center justify-center hover:bg-[var(--accent-hover)] transition-transform active:scale-95`}
               >
                 {isPlaying ? (
                   <Pause className={playIconCls} />
@@ -922,7 +1698,7 @@ export function VideoPlayerSurface({
                 type="button"
                 onClick={() => seekBySeconds(seekStepSeconds)}
                 title={`${seekStepSeconds} saniye ileri sar`}
-                className={`${btnPadCls} ${frameCls} text-white flex items-center gap-1 transition-colors focus:outline-none`}
+                className={`${btnPadCls} ${frameCls} text-white flex items-center gap-1 transition-colors`}
               >
                 <span className="font-mono-nums text-[11px] sm:text-xs font-extrabold text-[var(--accent)]">
                   +{seekStepSeconds}
@@ -934,19 +1710,18 @@ export function VideoPlayerSurface({
                 type="button"
                 onClick={onNext}
                 title="Sonraki Kanal"
-                className={`${btnPadCls} ${frameCls} text-white transition-colors focus:outline-none`}
+                className={`${btnPadCls} ${frameCls} text-white transition-colors`}
               >
                 <SkipForward className={iconSizeCls} />
               </button>
             </div>
 
-            {/* Right: BIG Prominent Fullscreen Toggle */}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => onToggleFullscreen(!isFullscreen)}
                 title={isFullscreen ? 'Tam Ekrandan Çık' : 'Tam Ekran'}
-                className={`${btnPadCls} bg-black/85 border-2 border-[var(--accent)] text-[var(--accent)] shadow-xl hover:bg-[var(--accent)] hover:text-[var(--accent-ink)] transition-colors focus:outline-none`}
+                className={`${btnPadCls} bg-black/85 border-2 border-[var(--accent)] text-[var(--accent)] shadow-xl hover:bg-[var(--accent)] hover:text-[var(--accent-ink)] transition-colors`}
               >
                 {isFullscreen ? (
                   <Minimize className={iconSizeCls} />
@@ -975,7 +1750,7 @@ export function VideoPlayerSurface({
                   Kanal Listesi (<span className="font-mono-nums">{channels.length}</span>)
                 </div>
                 <div className="text-[11px] text-[var(--muted)]">
-                  Yukarı/Aşağı: Seç · Sağ Ok: Kategori · Enter: İzle
+                  Yukarı/Aşağı: Seç · OK: İzle · Geri/Sol: Kapat
                 </div>
               </div>
               <button
@@ -991,6 +1766,7 @@ export function VideoPlayerSurface({
               <div className="relative">
                 <Search className="w-4 h-4 text-[var(--accent)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  ref={drawerSearchRef}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => onSearchChange(e.target.value)}
@@ -1008,24 +1784,65 @@ export function VideoPlayerSurface({
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                {visibleCategories.map((cat) => {
-                  const selected = cat === selectedCategory;
-                  return (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => onSelectCategory(cat)}
-                      className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] transition-colors focus:outline-none ${
-                        selected
-                          ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
-                          : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
-                      }`}
-                    >
-                      {cat}
-                    </button>
-                  );
-                })}
+              <div ref={drawerQuickTabsRef} className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  data-selected={selectedCategory === 'Tümü' ? 'true' : 'false'}
+                  onClick={() => onSelectCategory('Tümü')}
+                  className={`touch-compact flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-colors ${
+                    selectedCategory === 'Tümü'
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5 shrink-0" />
+                  <span>Tümü</span>
+                </button>
+                <button
+                  type="button"
+                  data-selected={selectedCategory === 'Favoriler' ? 'true' : 'false'}
+                  onClick={() => onSelectCategory('Favoriler')}
+                  className={`touch-compact flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-colors ${
+                    selectedCategory === 'Favoriler'
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] hover:border-[var(--accent)]'
+                  }`}
+                >
+                  <Heart
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      selectedCategory === 'Favoriler'
+                        ? 'fill-current'
+                        : 'fill-[var(--live)] text-[var(--live)]'
+                    }`}
+                  />
+                  <span>Favoriler ({favoriteIds.size})</span>
+                </button>
+              </div>
+
+              <div
+                ref={drawerCatsRef}
+                className="flex items-center gap-1.5 overflow-x-auto touch-scroll-x pb-1"
+              >
+                {visibleCategories
+                  .filter((cat) => cat !== 'Tümü' && cat !== 'Favoriler')
+                  .map((cat) => {
+                    const selected = cat === selectedCategory;
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        data-selected={selected ? 'true' : 'false'}
+                        onClick={() => onSelectCategory(cat)}
+                        className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] transition-colors ${
+                          selected
+                            ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
+                            : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    );
+                  })}
               </div>
             </div>
 
@@ -1040,27 +1857,34 @@ export function VideoPlayerSurface({
                   setDrawerLimit((prev) => Math.min(prev + 80, channels.length));
                 }
               }}
-              className="flex-1 overflow-y-auto p-2.5 space-y-2"
+              className="flex-1 min-h-0 overflow-y-auto touch-scroll-y p-2.5 space-y-2"
             >
-              {channels.slice(0, drawerLimit).map((ch, idx) => (
+              {channels.slice(0, drawerLimit).map((ch) => (
                 <ChannelRowItem
                   key={ch.id}
                   channel={ch}
                   compact
                   epgNow={lookupEpgForChannel(epgMap, ch.name)?.now?.title ?? null}
+                  perfStats={perfMap[getChannelPerfKey(ch)] ?? null}
                   isPlaying={currentChannel?.id === ch.id}
                   isFavorite={favoriteIds.has(ch.name)}
-                  isFocused={idx === focusedIndex}
-                  onSelect={() => {
-                    setFocusedIndex(idx);
-                    onSelectChannel(ch);
-                  }}
+                  onSelect={() => onSelectChannel(ch)}
                   onToggleFavorite={() => onToggleFavorite(ch)}
                 />
               ))}
               {channels.length === 0 && (
-                <div className="py-10 text-center text-xs text-[var(--muted)]">
-                  Bu filtrede kanal bulunamadı.
+                <div className="py-10 text-center text-xs text-[var(--muted)] space-y-2">
+                  <div>Bu filtrede kanal bulunamadı.</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSearchChange('');
+                      onSelectCategory('Tümü');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] font-bold"
+                  >
+                    Tüm Kanalları Göster
+                  </button>
                 </div>
               )}
             </div>

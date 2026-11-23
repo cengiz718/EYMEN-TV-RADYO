@@ -9,19 +9,31 @@ import {
   RefreshCw,
   RotateCcw,
   Share2,
+  Sparkles,
   X,
 } from 'lucide-react';
+import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
+import { normalizeInputUrl } from '../utils/m3uParser';
 
-type SourceTab = 'm3u' | 'bulk' | 'file' | 'xtream' | 'transfer';
+type SourceTab = 'ai' | 'm3u' | 'bulk' | 'file' | 'xtream' | 'transfer';
+
+interface AiDiscoverResponse {
+  count: number;
+  summary: string;
+  webSources?: Array<{ title: string; uri: string }>;
+  publishedUrl?: string;
+}
 
 interface PlaylistUpdateModalProps {
   isOpen: boolean;
   savedUrl: string;
   mandatoryAutoUpdate: boolean;
   lastUpdatedAt: string | null;
+  menuAutoCloseSeconds?: number;
   onClose: () => void;
   onSaveAndUpdate: (url: string, mandatory: boolean) => void;
   onAddBulkSources: (rawUrlsText: string, customName?: string) => Promise<void>;
+  onAiDiscoverLists: (topic?: string) => Promise<AiDiscoverResponse>;
   onImportLocalM3u: (content: string, filename: string) => void;
   onImportXtream: (server: string, username: string, password: string) => Promise<void>;
   onResetDefault: () => void;
@@ -32,9 +44,11 @@ export function PlaylistUpdateModal({
   savedUrl,
   mandatoryAutoUpdate,
   lastUpdatedAt,
+  menuAutoCloseSeconds = 5,
   onClose,
   onSaveAndUpdate,
   onAddBulkSources,
+  onAiDiscoverLists,
   onImportLocalM3u,
   onImportXtream,
   onResetDefault,
@@ -54,9 +68,22 @@ export function PlaylistUpdateModal({
   const [xtreamLoading, setXtreamLoading] = useState(false);
   const [xtreamError, setXtreamError] = useState<string | null>(null);
 
+  const [aiTopic, setAiTopic] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiResult, setAiResult] = useState<string | null>(null);
+  const [aiWebSources, setAiWebSources] = useState<Array<{ title: string; uri: string }>>([]);
+
   const [fileError, setFileError] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useIdleAutoClose(
+    isOpen,
+    menuAutoCloseSeconds,
+    onClose,
+    bulkLoading || xtreamLoading || aiLoading
+  );
 
   useEffect(() => {
     if (isOpen) {
@@ -64,17 +91,42 @@ export function PlaylistUpdateModal({
       setMandatory(mandatoryAutoUpdate);
       setBulkError(null);
       setXtreamError(null);
+      setAiError(null);
+      setAiResult(null);
+      setAiWebSources([]);
       setFileError(null);
       setCopiedLink(false);
     }
   }, [isOpen, savedUrl, mandatoryAutoUpdate]);
 
+  const handleSubmitAiDiscover = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAiError(null);
+    setAiResult(null);
+    setAiWebSources([]);
+    setAiLoading(true);
+    try {
+      const res = await onAiDiscoverLists(aiTopic.trim() || undefined);
+      setAiResult(res.summary);
+      if (Array.isArray(res.webSources)) {
+        setAiWebSources(res.webSources.slice(0, 4));
+      }
+    } catch (err) {
+      setAiError(
+        err instanceof Error ? err.message : 'Yapay zeka web listelerini bulamadı.'
+      );
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSubmitM3u = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputUrl.trim()) return;
-    onSaveAndUpdate(inputUrl.trim(), mandatory);
+    const normalized = normalizeInputUrl(inputUrl);
+    if (!normalized) return;
+    onSaveAndUpdate(normalized, mandatory);
     onClose();
   };
 
@@ -101,13 +153,14 @@ export function PlaylistUpdateModal({
   const handleSubmitXtream = async (e: React.FormEvent) => {
     e.preventDefault();
     setXtreamError(null);
-    if (!xtreamServer.trim() || !xtreamUser.trim() || !xtreamPass.trim()) {
+    const normalizedServer = normalizeInputUrl(xtreamServer);
+    if (!normalizedServer || !xtreamUser.trim() || !xtreamPass.trim()) {
       setXtreamError('Tüm alanları eksiksiz doldurun.');
       return;
     }
     setXtreamLoading(true);
     try {
-      await onImportXtream(xtreamServer.trim(), xtreamUser.trim(), xtreamPass.trim());
+      await onImportXtream(normalizedServer, xtreamUser.trim(), xtreamPass.trim());
       onClose();
     } catch (err) {
       setXtreamError(
@@ -160,10 +213,12 @@ export function PlaylistUpdateModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-2xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl overflow-hidden"
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-lg max-h-[90dvh] flex flex-col rounded-2xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 px-5 py-4 bg-[var(--surface-2)] border-b border-[var(--border)]">
+        <div className="shrink-0 flex items-start justify-between gap-3 px-5 py-4 bg-[var(--surface-2)] border-b border-[var(--border)]">
           <div>
             <h2 className="text-base font-extrabold text-[var(--ink)]">
               Kanallar ve Toplu Listeler
@@ -182,7 +237,20 @@ export function PlaylistUpdateModal({
         </div>
 
         {/* Source Tabs */}
-        <div className="grid grid-cols-5 gap-1 p-2 bg-[var(--bg)] border-b border-[var(--border)]">
+        <div className="shrink-0 grid grid-cols-3 sm:grid-cols-6 gap-1 p-2 bg-[var(--bg)] border-b border-[var(--border)]">
+          <button
+            type="button"
+            onClick={() => setTab('ai')}
+            className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+              tab === 'ai'
+                ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                : 'text-[var(--accent)] hover:bg-[var(--surface)]'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">AI Bul</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setTab('m3u')}
@@ -249,7 +317,70 @@ export function PlaylistUpdateModal({
           </button>
         </div>
 
-        <div className="p-5">
+        <div className="flex-1 min-h-0 overflow-y-auto touch-scroll-y p-4 sm:p-5">
+          {tab === 'ai' && (
+            <form onSubmit={handleSubmitAiDiscover} className="space-y-3.5">
+              <div className="rounded-xl bg-[var(--bg)] border border-[var(--accent)]/40 p-3 text-xs text-[var(--muted)] leading-relaxed">
+                <span className="font-bold text-[var(--accent)] block mb-0.5">
+                  Gömülü Yapay Zeka (Tüm Web + GitHub M3U Tarayıcı)
+                </span>
+                Her tıklamada tüm web genelinde (IPTV siteleri, Pastebin, GitLab, Bloglar ve GitHub) çalışan <span className="text-[var(--ink)] font-semibold">.m3u / .m3u8 / .json</span> listelerini arar, doğrular, kanallara ekler ve hemen yayınlar.
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[var(--muted)] mb-1">
+                  Ne Tür Kanallar Aransın? (İsteğe bağlı)
+                </label>
+                <input
+                  type="text"
+                  value={aiTopic}
+                  onChange={(e) => setAiTopic(e.target.value)}
+                  placeholder="Örn: Türkçe spor, belgesel, sinema, Kürtçe TV..."
+                  className="w-full rounded-xl bg-[var(--bg)] border border-[var(--border)] px-3.5 py-2.5 text-xs text-[var(--ink)] placeholder-[var(--muted)]/55 focus:border-[var(--accent)]"
+                />
+              </div>
+
+              {aiError && (
+                <div className="text-xs font-medium text-[var(--live)]">{aiError}</div>
+              )}
+
+              {aiResult && (
+                <div className="rounded-xl bg-[var(--surface-elevated)] border border-[var(--accent)]/50 p-3 text-xs text-[var(--accent)] font-semibold space-y-1.5">
+                  <div>{aiResult}</div>
+                  {aiWebSources.length > 0 && (
+                    <div className="pt-1 border-t border-white/10 text-[10px] text-[var(--muted)] space-y-0.5">
+                      <div className="font-bold text-[var(--ink)]">Taranan Web Kaynakları:</div>
+                      {aiWebSources.map((src) => (
+                        <a
+                          key={src.uri}
+                          href={src.uri}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block truncate text-[var(--accent)] hover:underline"
+                        >
+                          {src.title || src.uri}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={aiLoading}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-extrabold hover:bg-[var(--accent-hover)] disabled:opacity-50"
+              >
+                <Sparkles className={`w-4 h-4 ${aiLoading ? 'animate-spin' : ''}`} />
+                <span>
+                  {aiLoading
+                    ? 'AI Tüm Web ve GitHub Listelerini Tarıyor...'
+                    : "AI ile Tüm Web'den Bul, Ekle ve Yayınla"}
+                </span>
+              </button>
+            </form>
+          )}
+
           {tab === 'm3u' && (
             <form onSubmit={handleSubmitM3u} className="space-y-4">
               <div>
@@ -261,7 +392,8 @@ export function PlaylistUpdateModal({
                 </label>
                 <input
                   id="m3u-url-input"
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   placeholder="https://raw.githubusercontent.com/.../liste.json"
@@ -418,7 +550,8 @@ export function PlaylistUpdateModal({
                   Sunucu Adresi (Host / URL)
                 </label>
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   value={xtreamServer}
                   onChange={(e) => setXtreamServer(e.target.value)}
                   placeholder="http://sunucu.ornek:8080"
