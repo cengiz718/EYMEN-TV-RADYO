@@ -1,6 +1,6 @@
 {
-  "versionCode": 12,
-  "versionName": "7.3.2",
+  "versionCode": 13,
+  "versionName": "7.3.3",
   "apkUrl": "https://github.com/cengiz718/EYMEN-TV-RADYO/releases/latest/download/app-release.apk",
-  "releaseNotes": "7.3.2: Depodaki tam Türkçe M3U listesinden TV ve radyo kanalları yeniden yüklenir; radyo TV'den ayrılır, film/dizi yayınları canlı TV listesinden çıkarılır."
+  "releaseNotes": "7.3.3: Depodaki tam Türkçe M3U listesinden TV ve radyo kanalları yeniden yüklenir; radyo TV'den ayrılır, film/dizi yayınları canlı TV listesinden çıkarılır."
 }
