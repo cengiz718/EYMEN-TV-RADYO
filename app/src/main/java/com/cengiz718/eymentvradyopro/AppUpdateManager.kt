@@ -49,27 +49,27 @@ class AppUpdateManager(private val activity: Activity) {
                 val notes = json.optString("releaseNotes", "Yeni sürüm hazır.")
                 if (remoteCode <= BuildConfig.VERSION_CODE || apkUrl.isBlank()) return@execute
 
-                activity.runOnUiThread {
-                    if (!activity.isFinishing && !activity.isDestroyed) {
-                        showMandatoryUpdate(remoteName, notes, apkUrl)
-                    }
-                }
+                // Yeni sürüm bulunduğunda APK kullanıcıdan ayrıca "indir" onayı beklemeden
+                // arka planda otomatik indirilir. Android kurulum güvenliği nedeniyle
+                // son kurulum adımı sistem paket yükleyicisinin kullanıcı onayını gerektirir.
+                download(apkUrl, remoteName, notes)
             } catch (_: Exception) {
                 // A failed network check must never prevent the installed app from opening.
             }
         }
     }
 
-    private fun showMandatoryUpdate(version: String, notes: String, url: String) {
+    private fun showMandatoryUpdate(version: String, notes: String, apk: File) {
         AlertDialog.Builder(activity)
-            .setTitle("EYMEN TV RADYO güncellemesi")
-            .setMessage("Yeni sürüm $version hazır.\n\n$notes\n\nGüncellemeyi indirip Android kurulum ekranında onaylayın.")
+            .setTitle("EYMEN TV RADYO güncellemesi hazır")
+            .setMessage("$version indirildi.\n\n$notes\n\nŞimdi kurulumu başlatabilirsiniz.")
             .setCancelable(false)
-            .setPositiveButton("Güncelle") { _, _ -> download(url) }
+            .setPositiveButton("Şimdi Kur") { _, _ -> install(apk) }
+            .setNegativeButton("Daha Sonra", null)
             .show()
     }
 
-    private fun download(url: String) {
+    private fun download(url: String, version: String, notes: String) {
         Toast.makeText(activity, "Güncelleme indiriliyor...", Toast.LENGTH_LONG).show()
         worker.execute {
             try {
@@ -90,7 +90,11 @@ class AppUpdateManager(private val activity: Activity) {
                 connection.disconnect()
                 if (apk.length() < 1024) throw IllegalStateException("İndirilen APK geçersiz")
                 pendingApk = apk
-                activity.runOnUiThread { install(apk) }
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        showMandatoryUpdate(version, notes, apk)
+                    }
+                }
             } catch (error: Exception) {
                 activity.runOnUiThread {
                     Toast.makeText(activity, "Güncelleme hatası: ${error.message}", Toast.LENGTH_LONG).show()
