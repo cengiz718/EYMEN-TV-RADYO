@@ -12,8 +12,8 @@ android {
         applicationId = "com.cengiz718.eymentvradyopro"
         minSdk = 24
         targetSdk = 35
-        versionCode = 11
-        versionName = "7.3.1"
+        versionCode = 12
+        versionName = "7.3.2"
     }
     buildFeatures { buildConfig = true }
     signingConfigs {
