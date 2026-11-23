@@ -29,6 +29,8 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val localAppUrl = "file:///android_asset/www/index.html"
+    private val remoteAppUrl = "https://cengiz718.github.io/EYMEN-TV-RADYO/"
+    private var remoteLoaded = false
     private var downloadId: Long = -1L
     private var webViewDestroyed = false
     private lateinit var updateManager: AppUpdateManager
@@ -84,6 +86,12 @@ class MainActivity : AppCompatActivity() {
             }, "AndroidBridge")
 
             webViewClient = object : WebViewClient() {
+                override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                    if (request?.isForMainFrame == true && !remoteLoaded) {
+                        remoteLoaded = true
+                        view?.loadUrl(remoteAppUrl)
+                    }
+                }
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                     val target = request?.url?.toString() ?: return false
                     return target.startsWith("http://") || target.startsWith("https://")
@@ -97,7 +105,7 @@ class MainActivity : AppCompatActivity() {
         updateManager.checkForUpdate()
     }
 
-    private fun startApkDownload(apkUrl: String) {
+    private fun loadApp() {\n        try {\n            assets.open("www/index.html").use { }\n            webView.loadUrl(localAppUrl)\n        } catch (_: Exception) {\n            remoteLoaded = true\n            webView.loadUrl(remoteAppUrl)\n        }\n    }\n\n    private fun startApkDownload(apkUrl: String) {
         try {
             val request = DownloadManager.Request(Uri.parse(apkUrl))
                 .setTitle("Eymen TV & Radyo güncelleniyor")
