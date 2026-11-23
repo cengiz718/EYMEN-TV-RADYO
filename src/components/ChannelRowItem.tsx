@@ -1,11 +1,8 @@
 import { memo, useEffect, useState } from 'react';
 import { Heart, Radio, Tv } from 'lucide-react';
 import type { Channel } from '../types/channel';
-import {
-  getChannelPerfDisplay,
-  type ChannelPerfStats,
-} from '../utils/channelPerformance';
 import { buildChannelLogoProxyUrl } from '../utils/logoResolver';
+import { isRemoteSelectKey } from '../utils/remoteKeys';
 
 interface ChannelRowItemProps {
   channel: Channel;
@@ -14,7 +11,6 @@ interface ChannelRowItemProps {
   isFocused?: boolean;
   compact?: boolean;
   epgNow?: string | null;
-  perfStats?: ChannelPerfStats | null;
   onSelect: () => void;
   onToggleFavorite: () => void;
 }
@@ -26,7 +22,6 @@ export const ChannelRowItem = memo(function ChannelRowItem({
   isFocused = false,
   compact = false,
   epgNow = null,
-  perfStats = null,
   onSelect,
   onToggleFavorite,
 }: ChannelRowItemProps) {
@@ -44,16 +39,6 @@ export const ChannelRowItem = memo(function ChannelRowItem({
       ? `/api/logo?name=${encodeURIComponent(channel.name)}${channel.isRadio ? '&radio=1' : ''}`
       : null;
 
-  const perfDisplay = getChannelPerfDisplay(perfStats);
-  const perfColorCls =
-    perfDisplay?.tone === 'fast'
-      ? 'text-[var(--accent)] font-bold'
-      : perfDisplay?.tone === 'stable'
-      ? 'text-emerald-400 font-semibold'
-      : perfDisplay?.tone === 'warn'
-      ? 'text-amber-300 font-medium'
-      : 'text-[var(--live)] font-semibold';
-
   return (
     <div
       role="button"
@@ -62,7 +47,7 @@ export const ChannelRowItem = memo(function ChannelRowItem({
       data-channel-id={channel.id}
       onClick={onSelect}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (isRemoteSelectKey(e)) {
           e.preventDefault();
           onSelect();
         }
@@ -111,22 +96,16 @@ export const ChannelRowItem = memo(function ChannelRowItem({
         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--muted)] truncate">
           <span className="truncate">{channel.smartCategory}</span>
           {channel.isRadio && (
-            <span className="text-[var(--accent)] font-bold shrink-0">
-              · RADYO
+            <span className="text-[var(--accent)] font-semibold shrink-0">
+              · Radyo
             </span>
           )}
-          {perfDisplay && (
-            <span className={`font-mono-nums shrink-0 ${perfColorCls}`}>
-              · {perfDisplay.startupText ? `${perfDisplay.startupText} · ` : ''}
-              {perfDisplay.label} {perfDisplay.scoreText}
+          {epgNow && (
+            <span className="text-[var(--accent)]/90 truncate">
+              · {epgNow}
             </span>
           )}
         </div>
-        {epgNow && (
-          <div className="mt-0.5 text-[11px] text-[var(--accent)]/90 truncate">
-            Şimdi: {epgNow}
-          </div>
-        )}
       </div>
 
       <button

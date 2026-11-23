@@ -390,8 +390,11 @@ jobs:
 
           import android.annotation.SuppressLint
           import android.app.AlertDialog
+          import android.app.UiModeManager
           import android.content.Context
           import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
           import android.graphics.Color
           import android.net.ConnectivityManager
           import android.net.NetworkCapabilities
@@ -402,6 +405,7 @@ jobs:
           import android.view.View
           import android.view.ViewGroup
           import android.view.WindowManager
+          import android.view.inputmethod.InputMethodManager
           import android.webkit.JavascriptInterface
           import android.webkit.WebChromeClient
           import android.webkit.WebResourceError
@@ -437,6 +441,16 @@ jobs:
               private const val OFFLINE_LOCAL_URL = "https://appassets.androidplatform.net/assets/www/index.html"
             }
 
+            private fun isTvDevice(): Boolean {
+              return try {
+                val pmTv = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                val uiMode = (getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)?.currentModeType
+                pmTv || uiMode == Configuration.UI_MODE_TYPE_TELEVISION
+              } catch (_: Throwable) {
+                false
+              }
+            }
+
             inner class AndroidAppBridge {
               @JavascriptInterface
               fun exitApp() {
@@ -452,6 +466,18 @@ jobs:
                     if (url.startsWith("https://") || url.startsWith("http://")) {
                       startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     }
+                  } catch (_: Throwable) {}
+                }
+              }
+
+              @JavascriptInterface
+              fun showSoftKeyboard() {
+                runOnUiThread {
+                  try {
+                    val wv = webView ?: return@runOnUiThread
+                    wv.requestFocus()
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.showSoftInput(wv, InputMethodManager.SHOW_IMPLICIT)
                   } catch (_: Throwable) {}
                 }
               }
@@ -579,8 +605,15 @@ jobs:
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                   super.onPageFinished(view, url)
-                  if (url != null && url.startsWith("http")) {
+                  if (url != null && url != "about:blank") {
                     pageLoadedOk = true
+                    view?.requestFocus()
+                    if (isTvDevice()) {
+                      view?.evaluateJavascript(
+                        "window.__IS_ANDROID_TV__=true;document.body&&document.body.classList.add('tv-remote-active');window.dispatchEvent(new Event('eymen-tv-ready'));",
+                        null
+                      )
+                    }
                   }
                 }
 
@@ -687,16 +720,78 @@ jobs:
                 .show()
             }
 
-            override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-              if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
-                showUrlDialog("Sunucu Adresi Ayarla")
-                return true
+            private fun mapRemoteKey(keyCode: Int): Pair<String, Int>? {
+              return when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> "ArrowUp" to 38
+                KeyEvent.KEYCODE_DPAD_DOWN -> "ArrowDown" to 40
+                KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft" to 37
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight" to 39
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> "DPadCenter" to 23
+                KeyEvent.KEYCODE_MENU,
+                KeyEvent.KEYCODE_GUIDE -> "ContextMenu" to 82
+                KeyEvent.KEYCODE_CHANNEL_UP -> "ChannelUp" to 166
+                KeyEvent.KEYCODE_CHANNEL_DOWN -> "ChannelDown" to 167
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "MediaPlayPause" to 85
+                KeyEvent.KEYCODE_MEDIA_PLAY -> "MediaPlay" to 126
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> "MediaPause" to 127
+                KeyEvent.KEYCODE_MEDIA_NEXT -> "MediaTrackNext" to 87
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "MediaTrackPrevious" to 88
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> "MediaFastForward" to 90
+                KeyEvent.KEYCODE_MEDIA_REWIND -> "MediaRewind" to 89
+                else -> null
               }
+            }
+
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+              val keyCode = event.keyCode
+              val wv = webView
+              if (customView == null && pageLoadedOk && wv != null) {
+                if (keyCode == KeyEvent.KEYCODE_INFO || (keyCode == KeyEvent.KEYCODE_MENU && event.repeatCount >= 6)) {
+                  if (event.action == KeyEvent.ACTION_DOWN) {
+                    showUrlDialog("Sunucu Adresi Ayarla")
+                  }
+                  return true
+                }
+                val mapped = mapRemoteKey(keyCode)
+                if (mapped != null) {
+                  if (event.action == KeyEvent.ACTION_DOWN) {
+                    wv.requestFocus()
+                    val (jsKey, jsCode) = mapped
+                    wv.evaluateJavascript(
+                      "if(window.__eymenRemoteKey){window.__eymenRemoteKey('$jsKey',$jsCode);}",
+                      null
+                    )
+                  }
+                  return true
+                }
+              }
+              return super.dispatchKeyEvent(event)
+            }
+
+            override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
               if (keyCode == KeyEvent.KEYCODE_BACK) {
                 handleBackNavigation()
                 return true
               }
+              if (keyCode == KeyEvent.KEYCODE_INFO) {
+                showUrlDialog("Sunucu Adresi Ayarla")
+                return true
+              }
               return super.onKeyDown(keyCode, event)
+            }
+
+            override fun onResume() {
+              super.onResume()
+              webView?.onResume()
+              webView?.resumeTimers()
+              webView?.requestFocus()
+            }
+
+            override fun onPause() {
+              webView?.onPause()
+              super.onPause()
             }
 
             override fun onDestroy() {

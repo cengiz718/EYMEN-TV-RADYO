@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import {
+  AudioLines,
   LayoutGrid,
   Maximize,
   Minimize,
   Maximize2,
   RotateCw,
   Tv,
-  Volume2,
-  VolumeX,
   X,
 } from 'lucide-react';
 import type { AspectMode, BufferPreset, Channel } from '../types/channel';
 import { buildHlsConfig } from '../utils/hlsConfig';
+import { isRemoteSelectKey } from '../utils/remoteKeys';
 
 interface MultiScreenTileProps {
   index: number;
@@ -205,7 +205,7 @@ function MultiScreenTile({
       tabIndex={0}
       onClick={onSelectSlot}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Select' || e.key === 'DPadCenter') {
+        if (isRemoteSelectKey(e)) {
           e.preventDefault();
           onSelectSlot();
         }
@@ -304,14 +304,10 @@ function MultiScreenTile({
                 className={`touch-compact min-w-[34px] min-h-[34px] flex items-center justify-center p-1.5 rounded-lg text-xs transition-colors focus:outline-none ${
                   isAudioActive
                     ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
-                    : 'bg-black/65 text-white/85 hover:text-white'
+                    : 'bg-black/65 text-white/60 hover:text-white'
                 }`}
               >
-                {isAudioActive ? (
-                  <Volume2 className="w-4 h-4" />
-                ) : (
-                  <VolumeX className="w-4 h-4" />
-                )}
+                <AudioLines className="w-4 h-4" />
               </button>
               <button
                 type="button"

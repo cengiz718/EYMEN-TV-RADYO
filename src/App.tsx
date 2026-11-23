@@ -3,26 +3,17 @@ import {
   BellRing,
   CalendarClock,
   Check,
-  ChevronDown,
-  ChevronUp,
   CloudDownload,
   Film,
   Heart,
   History,
-  Layers,
   LayoutGrid,
   LogOut,
-  Moon,
-  PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
   PanelRightOpen,
   Radio,
-  RefreshCw,
   Search,
   Settings,
-  ShieldCheck,
-  Sparkles,
   Tv,
   WifiOff,
   X,
@@ -57,7 +48,6 @@ import { isAdultContent } from './utils/contentFilter';
 import { computeEpgProgress, formatEpgTime, lookupEpgForChannel } from './utils/epg';
 import {
   clearChannelPerfMap,
-  getChannelPerfKey,
   loadChannelPerfMap,
   recordChannelPerfEvent,
   saveChannelPerfMap,
@@ -79,6 +69,17 @@ import {
   isDeadLogoUrl,
   resolveAndAttachChannelLogos,
 } from './utils/logoResolver';
+import {
+  getRemoteDirection,
+  installRemoteBridge,
+  isAnyRemoteNavigationKey,
+  isRemoteBackKey,
+  isRemoteMenuKey,
+  isRemoteSelectKey,
+  isTextInputElement,
+  isTvEnvironment,
+  triggerElementActivation,
+} from './utils/remoteKeys';
 
 const PlaylistUpdateModal = lazy(() =>
   import('./components/PlaylistUpdateModal').then((m) => ({
@@ -207,7 +208,6 @@ export default function App() {
   const [headerAutoHidden, setHeaderAutoHidden] = useState(false);
   const [isLeftVodOpen, setIsLeftVodOpen] = useState(true);
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(true);
-  const [smartGroupExpanded, setSmartGroupExpanded] = useState(false);
   const [perfMap, setPerfMap] = useState<Record<string, ChannelPerfStats>>(
     loadChannelPerfMap
   );
@@ -2370,6 +2370,41 @@ export default function App() {
     };
   }, [isVisibleFocusable, recoverLostFocus]);
 
+  // Install Android TV WebView remote bridge & auto-activate TV focus on TV devices
+  useEffect(() => {
+    const cleanupBridge = installRemoteBridge();
+    const activateTvMode = () => {
+      if (isTvEnvironment()) {
+        document.body.classList.add('tv-remote-active');
+        const active = document.activeElement as HTMLElement | null;
+        if (!active || active === document.body || !isVisibleFocusable(active)) {
+          window.setTimeout(() => {
+            recoverLostFocus();
+          }, 80);
+        }
+      }
+    };
+    activateTvMode();
+    window.addEventListener('eymen-tv-ready', activateTvMode);
+    return () => {
+      cleanupBridge();
+      window.removeEventListener('eymen-tv-ready', activateTvMode);
+    };
+  }, [isVisibleFocusable, recoverLostFocus]);
+
+  // Focus initial channel row once playlist finishes loading on TV devices
+  useEffect(() => {
+    if (isLoading || filteredChannels.length === 0 || isFullscreen || isAnyModalOpen) return;
+    if (!isTvEnvironment() && !document.body.classList.contains('tv-remote-active')) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || active === document.body || !isVisibleFocusable(active)) {
+      const id = window.setTimeout(() => {
+        recoverLostFocus();
+      }, 60);
+      return () => window.clearTimeout(id);
+    }
+  }, [isLoading, filteredChannels.length, isFullscreen, isAnyModalOpen, isVisibleFocusable, recoverLostFocus]);
+
   useEffect(() => {
     try {
       if (!window.history.state?.eymenGuard) {
@@ -2422,8 +2457,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    const onPointerDown = () => {
-      document.body.classList.remove('tv-remote-active');
+    const onPointerDown = (e: Event) => {
+      if (!isTvEnvironment()) {
+        if ((e as PointerEvent).pointerType === 'touch' || e.type === 'touchstart') {
+          document.body.classList.remove('tv-remote-active');
+        }
+      }
     };
 
     const moveSpatialFocus = (
@@ -2492,66 +2531,45 @@ export default function App() {
     };
 
     const onGlobalKeyDown = (e: KeyboardEvent) => {
-      if (
-        e.key.startsWith('Arrow') ||
-        e.key === 'Tab' ||
-        e.key === 'Select' ||
-        e.key === 'DPadCenter' ||
-        e.key === 'Enter' ||
-        e.key.startsWith('Channel') ||
-        e.key.startsWith('Media') ||
-        e.key === 'GoBack' ||
-        e.key === 'BrowserBack'
-      ) {
+      if (isAnyRemoteNavigationKey(e)) {
         document.body.classList.add('tv-remote-active');
       }
 
       const target = e.target as HTMLElement | null;
-      const inputEl = target?.tagName === 'INPUT' ? (target as HTMLInputElement) : null;
-      const isTextTypingInput = Boolean(
-        target &&
-          ((inputEl &&
-            !['checkbox', 'radio', 'range', 'button', 'submit', 'reset'].includes(
-              inputEl.type
-            )) ||
-            target.tagName === 'TEXTAREA' ||
-            target.isContentEditable)
-      );
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isTextTypingInput = isTextInputElement(activeEl ?? target);
+      const dir = getRemoteDirection(e);
 
       // Reveal auto-hidden header & toggle side panel on Menu / L / M
       if (
         !isFullscreen &&
         !isAnyModalOpen &&
         !isTextTypingInput &&
-        (e.key === 'm' ||
+        (isRemoteMenuKey(e) ||
+          e.key === 'm' ||
           e.key === 'M' ||
           e.key === 'l' ||
-          e.key === 'L' ||
-          e.key === 'ContextMenu' ||
-          e.key === 'Guide')
+          e.key === 'L')
       ) {
         e.preventDefault();
         setHeaderAutoHidden(false);
-        setIsSidePanelOpen((prev) => !prev);
+        setIsSidePanelOpen((prev) => {
+          const next = !prev;
+          if (next) {
+            window.setTimeout(() => recoverLostFocus(), 40);
+          }
+          return next;
+        });
         return;
       }
 
-      if (headerAutoHidden && (e.key === 'ContextMenu' || e.key === 'Menu')) {
+      if (headerAutoHidden && isRemoteMenuKey(e)) {
         setHeaderAutoHidden(false);
       }
 
       if (isFullscreen) return;
 
-      const isBack =
-        e.key === 'Escape' ||
-        e.key === 'GoBack' ||
-        e.key === 'BrowserBack' ||
-        e.key === 'Back' ||
-        (!isTextTypingInput && e.key === 'Backspace') ||
-        e.keyCode === 4 ||
-        e.keyCode === 461;
-
-      if (isBack) {
+      if (isRemoteBackKey(e, isTextTypingInput)) {
         e.preventDefault();
         if (showExitConfirm) {
           setShowExitConfirm(false);
@@ -2573,46 +2591,32 @@ export default function App() {
         return;
       }
 
-      const activeEl = document.activeElement as HTMLElement | null;
-
-      // Android TV OK / Select / Enter toggles checkboxes cleanly
-      if (
-        (e.key === 'Select' || e.key === 'DPadCenter' || e.key === 'Enter') &&
-        activeEl?.tagName === 'INPUT' &&
-        (activeEl as HTMLInputElement).type === 'checkbox'
-      ) {
-        e.preventDefault();
-        activeEl.click();
-        return;
-      }
-
-      // Spatial navigation inside any open modal dialog
+      // Spatial navigation & OK activation inside any open modal dialog
       if (isAnyModalOpen) {
         const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'));
         const dialogEl = dialogs[dialogs.length - 1];
         if (!dialogEl) return;
         if (isTextTypingInput) {
-          if (e.key === 'ArrowDown') {
+          if (dir === 'down') {
             e.preventDefault();
             moveSpatialFocus(dialogEl, 'down');
-          } else if (e.key === 'ArrowUp') {
+          } else if (dir === 'up') {
             e.preventDefault();
             moveSpatialFocus(dialogEl, 'up');
           }
           return;
         }
-        if (e.key === 'ArrowDown') {
+        if (isRemoteSelectKey(e)) {
+          if (!e.defaultPrevented && activeEl && dialogEl.contains(activeEl)) {
+            if (triggerElementActivation(activeEl)) {
+              e.preventDefault();
+            }
+          }
+          return;
+        }
+        if (dir) {
           e.preventDefault();
-          moveSpatialFocus(dialogEl, 'down');
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          moveSpatialFocus(dialogEl, 'up');
-        } else if (e.key === 'ArrowLeft') {
-          e.preventDefault();
-          moveSpatialFocus(dialogEl, 'left');
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault();
-          moveSpatialFocus(dialogEl, 'right');
+          moveSpatialFocus(dialogEl, dir);
         }
         return;
       }
@@ -2628,7 +2632,7 @@ export default function App() {
 
       // Exit text inputs cleanly on D-Pad Down / Up
       if (isTextTypingInput) {
-        if (e.key === 'ArrowDown') {
+        if (dir === 'down') {
           e.preventDefault();
           if (leftVodZone && leftVodZone.contains(activeEl)) {
             moveSpatialFocus(leftVodZone, 'down');
@@ -2639,7 +2643,7 @@ export default function App() {
           } else if (listZone) {
             listZone.querySelector<HTMLElement>('[data-channel-id]')?.focus();
           }
-        } else if (e.key === 'ArrowUp') {
+        } else if (dir === 'up') {
           e.preventDefault();
           if (leftVodZone && leftVodZone.contains(activeEl)) {
             const moved = moveSpatialFocus(leftVodZone, 'up');
@@ -2664,29 +2668,33 @@ export default function App() {
         return;
       }
 
-      const isArrow =
-        e.key === 'ArrowUp' ||
-        e.key === 'ArrowDown' ||
-        e.key === 'ArrowLeft' ||
-        e.key === 'ArrowRight';
-
       // Immediate zero-loss focus recovery if activeElement got dropped to body or hidden element
       if (
-        isArrow &&
+        (dir || isRemoteSelectKey(e)) &&
         (!activeEl || activeEl === document.body || !isVisibleFocusable(activeEl))
       ) {
         e.preventDefault();
         setHeaderAutoHidden(false);
-        if (!isSidePanelOpen && (e.key === 'ArrowRight' || e.key === 'ArrowDown')) {
+        if (!isSidePanelOpen && (dir === 'right' || dir === 'down' || isRemoteSelectKey(e))) {
           setIsSidePanelOpen(true);
         }
         window.setTimeout(() => {
           recoverLostFocus();
-        }, 20);
+        }, 25);
         return;
       }
 
-      if (!isArrow) return;
+      // Unified OK / Select / DPadCenter / Enter activation for focused buttons, channel rows, VOD cards, checkboxes
+      if (isRemoteSelectKey(e)) {
+        if (!e.defaultPrevented && activeEl) {
+          if (triggerElementActivation(activeEl)) {
+            e.preventDefault();
+          }
+        }
+        return;
+      }
+
+      if (!dir) return;
 
       const focusStageAnchor = (): boolean => {
         if (!stageZone) return false;
@@ -2758,9 +2766,9 @@ export default function App() {
       // Zone 0: Header buttons
       if (headerZone && headerZone.contains(activeEl)) {
         e.preventDefault();
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-          moveSpatialFocus(headerZone, e.key === 'ArrowRight' ? 'right' : 'left');
-        } else if (e.key === 'ArrowDown') {
+        if (dir === 'left' || dir === 'right') {
+          moveSpatialFocus(headerZone, dir);
+        } else if (dir === 'down') {
           const rect = activeEl?.getBoundingClientRect();
           const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
           if (leftVodZone && isVisibleFocusable(leftVodZone) && cx < window.innerWidth * 0.32) {
@@ -2781,20 +2789,16 @@ export default function App() {
       // Zone 1: Left Film & Dizi (VOD)
       if (leftVodZone && leftVodZone.contains(activeEl)) {
         e.preventDefault();
-        const dir =
-          e.key === 'ArrowDown'
-            ? 'down'
-            : e.key === 'ArrowUp'
-            ? 'up'
-            : e.key === 'ArrowRight'
-            ? 'right'
-            : 'left';
         const moved = moveSpatialFocus(leftVodZone, dir);
         if (!moved) {
           if (dir === 'right') {
             if (!focusStageAnchor()) focusRightPanelAnchor();
-          } else if (dir === 'up' && headerZone && isVisibleFocusable(headerZone)) {
-            getZoneFocusables(headerZone)[0]?.focus();
+          } else if (dir === 'up') {
+            setHeaderAutoHidden(false);
+            window.setTimeout(() => {
+              const hz = document.querySelector<HTMLElement>('[data-nav-zone="header"]');
+              getZoneFocusables(hz)[0]?.focus();
+            }, 25);
           }
         }
         return;
@@ -2803,22 +2807,35 @@ export default function App() {
       // Zone 2: Center Stage (Player OSD / EPG Bar)
       if (stageZone && stageZone.contains(activeEl)) {
         e.preventDefault();
-        const dir =
-          e.key === 'ArrowDown'
-            ? 'down'
-            : e.key === 'ArrowUp'
-            ? 'up'
-            : e.key === 'ArrowRight'
-            ? 'right'
-            : 'left';
         const moved = moveSpatialFocus(stageZone, dir);
         if (!moved) {
           if (dir === 'left') {
-            focusLeftVodAnchor();
+            if (!focusLeftVodAnchor()) {
+              if (
+                window.innerWidth >= 768 ||
+                window.matchMedia('(orientation: landscape)').matches
+              ) {
+                setHeaderAutoHidden(false);
+                setIsLeftVodOpen(true);
+                window.setTimeout(() => {
+                  const lz = document.querySelector<HTMLElement>('[data-nav-zone="left-vod"]');
+                  const card = lz?.querySelector<HTMLElement>('[data-vod-card]');
+                  (card ?? getZoneFocusables(lz)[0])?.focus();
+                }, 40);
+              }
+            }
           } else if (dir === 'right') {
-            focusRightPanelAnchor();
-          } else if (dir === 'up' && headerZone && isVisibleFocusable(headerZone)) {
-            getZoneFocusables(headerZone)[0]?.focus();
+            if (!focusRightPanelAnchor()) {
+              setHeaderAutoHidden(false);
+              setIsSidePanelOpen(true);
+              window.setTimeout(() => recoverLostFocus(), 40);
+            }
+          } else if (dir === 'up') {
+            setHeaderAutoHidden(false);
+            window.setTimeout(() => {
+              const hz = document.querySelector<HTMLElement>('[data-nav-zone="header"]');
+              getZoneFocusables(hz)[0]?.focus();
+            }, 25);
           }
         }
         return;
@@ -2829,20 +2846,22 @@ export default function App() {
         e.preventDefault();
         const btns = getZoneFocusables(tabsNav);
         const idx = activeEl ? btns.indexOf(activeEl) : -1;
-        if (e.key === 'ArrowLeft') {
+        if (dir === 'left') {
           if (idx <= 0) {
             if (!focusStageAnchor()) focusLeftVodAnchor();
           } else {
             btns[idx - 1]?.focus();
           }
-        } else if (e.key === 'ArrowRight') {
+        } else if (dir === 'right') {
           btns[Math.min(idx + 1, btns.length - 1)]?.focus();
-        } else if (e.key === 'ArrowUp') {
-          if (headerZone && isVisibleFocusable(headerZone)) {
-            const hBtns = getZoneFocusables(headerZone);
+        } else if (dir === 'up') {
+          setHeaderAutoHidden(false);
+          window.setTimeout(() => {
+            const hz = document.querySelector<HTMLElement>('[data-nav-zone="header"]');
+            const hBtns = getZoneFocusables(hz);
             hBtns[hBtns.length - 1]?.focus();
-          }
-        } else if (e.key === 'ArrowDown') {
+          }, 25);
+        } else if (dir === 'down') {
           const searchInput = sidePanelZone?.querySelector<HTMLElement>(
             '[data-channel-search="true"]'
           );
@@ -2862,14 +2881,6 @@ export default function App() {
       // Zone 3b: Right Panel Smart Group Filter
       if (smartGroupZone && smartGroupZone.contains(activeEl)) {
         e.preventDefault();
-        const dir =
-          e.key === 'ArrowDown'
-            ? 'down'
-            : e.key === 'ArrowUp'
-            ? 'up'
-            : e.key === 'ArrowRight'
-            ? 'right'
-            : 'left';
         const moved = moveSpatialFocus(smartGroupZone, dir);
         if (!moved) {
           if (dir === 'down') {
@@ -2906,14 +2917,14 @@ export default function App() {
         );
         const idx = rowEl ? rows.indexOf(rowEl) : -1;
 
-        if (e.key === 'ArrowRight') {
+        if (dir === 'right') {
           if (!isFavBtn && rowEl) {
             const favBtn = rowEl.querySelector<HTMLElement>('button[aria-label="Favori"]');
             favBtn?.focus();
           }
           return;
         }
-        if (e.key === 'ArrowLeft') {
+        if (dir === 'left') {
           if (isFavBtn && rowEl) {
             rowEl.focus();
           } else if (!focusStageAnchor()) {
@@ -2922,14 +2933,14 @@ export default function App() {
           return;
         }
         if (idx !== -1) {
-          if (e.key === 'ArrowDown') {
+          if (dir === 'down') {
             if (idx >= rows.length - 6 && visibleCount < filteredChannels.length) {
               setVisibleCount((prev) => Math.min(prev + 100, filteredChannels.length));
             }
             const next = rows[Math.min(idx + 1, rows.length - 1)];
             next?.focus();
             next?.scrollIntoView({ block: 'nearest' });
-          } else if (e.key === 'ArrowUp') {
+          } else if (dir === 'up') {
             if (idx === 0) {
               if (smartGroupZone && isVisibleFocusable(smartGroupZone)) {
                 getZoneFocusables(smartGroupZone)[0]?.focus();
@@ -2959,14 +2970,6 @@ export default function App() {
       // Zone 3d: Radio / Settings / Mobile VOD Panel
       if (panelZone && panelZone.contains(activeEl)) {
         e.preventDefault();
-        const dir =
-          e.key === 'ArrowDown'
-            ? 'down'
-            : e.key === 'ArrowUp'
-            ? 'up'
-            : e.key === 'ArrowRight'
-            ? 'right'
-            : 'left';
         const moved = moveSpatialFocus(panelZone, dir);
         if (!moved) {
           if (dir === 'up') {
@@ -3097,50 +3100,31 @@ export default function App() {
       }}
       className="h-dvh w-full flex flex-col bg-[var(--bg)] text-[var(--ink)] overflow-hidden"
     >
-      {/* Compact Single-Row Header (auto-hides during film playback & hidden in fullscreen) */}
+      {/* Clean Single-Row Header */}
       <header
         data-nav-zone="header"
-        className={`shrink-0 flex items-center justify-between gap-2 sm:gap-3 bg-[var(--surface-2)] transition-all duration-300 ${
+        className={`shrink-0 flex items-center justify-between gap-4 bg-[var(--surface-2)] transition-all duration-300 ${
           isFullscreen || headerAutoHidden
             ? 'max-h-0 opacity-0 py-0 px-3.5 border-b-0 overflow-hidden pointer-events-none'
-            : 'max-h-20 opacity-100 px-3 sm:px-3.5 py-2 sm:py-2.5 border-b border-[var(--border)]'
+            : 'max-h-16 opacity-100 px-3 sm:px-4 py-2 border-b border-[var(--border)]'
         }`}
       >
         <div className="flex items-center gap-2.5 min-w-0">
-          <AppLogoBadge className="w-8 h-8 sm:w-9 sm:h-9 shrink-0" />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <h1 className="text-[14px] sm:text-base font-extrabold tracking-tight text-[var(--ink)] truncate">
-                EYMEN TV &amp; RADYO
-              </h1>
-              <span className="text-[var(--accent)] font-extrabold text-base leading-none">
-                .
-              </span>
-            </div>
-            <p className="text-[10px] sm:text-[11px] text-[var(--muted)] truncate">
-              <span className="font-mono-nums">{allChannels.length}</span> Kanal ·{' '}
-              <span className="font-mono-nums">{onlineRadios.length + kurdishRadios.length}</span> Radyo · Hazırlayan: Mehmet Cengiz Akdağ
-            </p>
-          </div>
+          <AppLogoBadge className="w-7 h-7 sm:w-8 sm:h-8 shrink-0" />
+          <h1 className="text-[14px] sm:text-base font-extrabold tracking-tight text-[var(--ink)] whitespace-nowrap truncate">
+            EYMEN TV &amp; RADYO
+          </h1>
         </div>
 
-        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           {sleepMinutes !== null && (
-            <span className="font-mono-nums px-2 py-1 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--accent)] text-[11px] font-bold">
-              {sleepMinutes}dk
-            </span>
-          )}
-
-          {savedUrl.trim() && (
             <button
               type="button"
-              onClick={() => void fetchRemoteM3u(savedUrl, true).catch(() => {})}
-              disabled={isUpdating}
-              title="M3U Listesini Güncelle"
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--accent)] text-xs font-semibold hover:border-[var(--accent)] disabled:opacity-50 whitespace-nowrap"
+              onClick={() => setShowSleepDialog(true)}
+              title="Uyku Zamanlayıcı Aktif"
+              className="font-mono-nums px-2 py-1 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--accent)] text-[11px] font-bold"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-              <span>Güncelle</span>
+              {sleepMinutes}dk
             </button>
           )}
 
@@ -3148,111 +3132,43 @@ export default function App() {
             type="button"
             onClick={handleToggleMultiScreen}
             title="Çoklu Ekran Modu (1 / 2 / 4 Ekran)"
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
               multiScreenLayout > 1
                 ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
                 : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] hover:border-[var(--accent)]'
             }`}
           >
-            <LayoutGrid className="w-3.5 h-3.5" />
+            <LayoutGrid className="w-4 h-4" />
             <span className="hidden md:inline font-mono-nums">
               {multiScreenLayout === 1
                 ? 'Çoklu Ekran'
-                : `${multiScreenLayout}'li Ekran`}
+                : `${multiScreenLayout}'li`}
             </span>
-          </button>
-
-          {currentChannel && !currentChannel.isRadio && settings.epgEnabled && (
-            <button
-              type="button"
-              onClick={() => setShowEpgDialog(true)}
-              aria-label="Yayın Akışı (EPG)"
-              title="Yayın Akışı (EPG)"
-              className="hidden sm:inline-flex p-2 rounded-lg text-[var(--accent)] hover:bg-white/10"
-            >
-              <CalendarClock className="w-5 h-5" />
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setShowSleepDialog(true)}
-            aria-label="Uyku Zamanlayıcı"
-            title="Uyku Zamanlayıcı"
-            className="p-2 rounded-lg text-[var(--accent)] hover:bg-white/10"
-          >
-            <Moon className="w-5 h-5" />
-          </button>
-
-          <button
-            type="button"
-            disabled={isAiDiscovering}
-            onClick={() => void discoverAndAddGithubListsWithAi(undefined, false).catch(() => {})}
-            aria-label="AI ile Tüm Web ve GitHub'da M3U Bul, Ekle ve Yayınla"
-            title="AI ile Tüm Web ve GitHub'da M3U Bul, Ekle ve Yayınla"
-            className="p-2 rounded-lg text-[var(--accent)] hover:bg-white/10 disabled:opacity-50"
-          >
-            <Sparkles className={`w-5 h-5 ${isAiDiscovering ? 'animate-spin' : ''}`} />
           </button>
 
           <button
             type="button"
             onClick={() => setShowUrlDialog(true)}
-            aria-label="Kanallar ve Listeler (M3U / Dosya / Xtream)"
+            aria-label="Kanallar ve Listeler"
             title="Kanallar ve Listeler"
-            className="p-2 rounded-lg text-[var(--accent)] hover:bg-white/10"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] hover:border-[var(--accent)] text-xs font-semibold whitespace-nowrap"
           >
-            <CloudDownload className="w-5 h-5" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsLeftVodOpen((v) => !v)}
-            aria-label={isLeftVodOpen ? 'Sol Film & Dizi Gizle' : 'Sol Film & Dizi Aç'}
-            title={isLeftVodOpen ? 'Sol Film & Dizi Gizle' : 'Sol Film & Dizi Aç'}
-            className={`hidden md:flex p-2 rounded-lg hover:bg-white/10 ${
-              isLeftVodOpen
-                ? 'text-[var(--accent)]'
-                : 'bg-[var(--surface)] border border-[var(--accent)]/60 text-[var(--accent)]'
-            }`}
-          >
-            {isLeftVodOpen ? (
-              <PanelLeftClose className="w-5 h-5" />
-            ) : (
-              <PanelLeftOpen className="w-5 h-5" />
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsSidePanelOpen((v) => !v)}
-            aria-label={isSidePanelOpen ? 'Sağ Kanallar & Radyoyu Kapat' : 'Sağ Kanallar & Radyoyu Aç'}
-            title={isSidePanelOpen ? 'Sağ Kanallar & Radyoyu Kapat' : 'Sağ Kanallar & Radyoyu Aç'}
-            className={`hidden md:inline-flex landscape:inline-flex p-2 rounded-lg hover:bg-white/10 ${
-              isSidePanelOpen
-                ? 'text-[var(--accent)]'
-                : 'bg-[var(--surface)] border border-[var(--accent)]/60 text-[var(--accent)]'
-            }`}
-          >
-            {isSidePanelOpen ? (
-              <PanelRightClose className="w-5 h-5" />
-            ) : (
-              <PanelRightOpen className="w-5 h-5" />
-            )}
+            <CloudDownload className="w-4 h-4 text-[var(--accent)]" />
+            <span className="hidden sm:inline">Listeler</span>
           </button>
 
           <button
             type="button"
             onClick={() => {
               setIsSidePanelOpen(true);
-              setActiveTab('settings');
+              setActiveTab((prev) => (prev === 'settings' ? 'channels' : 'settings'));
             }}
             aria-label="Ayarlar"
             title="Ayarlar"
-            className={`hidden md:inline-flex landscape:inline-flex p-2 rounded-lg hover:bg-white/10 ${
+            className={`p-2 rounded-lg transition-colors ${
               activeTab === 'settings' && isSidePanelOpen
                 ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
-                : 'text-[var(--accent)]'
+                : 'text-[var(--accent)] hover:bg-white/10'
             }`}
           >
             <Settings className="w-5 h-5" />
@@ -3353,9 +3269,6 @@ export default function App() {
             progressMap={vodProgressMap}
             favoriteIds={favoriteIds}
             currentChannel={currentChannel}
-            cinemaLiveCount={
-              allChannels.filter((c) => c.smartCategory === 'Sinema & Dizi').length
-            }
             isLoadingVod={isLoadingVod}
             isAiDiscoveringVod={isAiDiscoveringVod}
             onPlayVodItem={(item) => handleSelectChannel(vodItemToChannel(item))}
@@ -3363,27 +3276,6 @@ export default function App() {
             onToggleFavorite={toggleFavorite}
             onOpenImportModal={() => setShowVodModal(true)}
             onRefreshVodCatalog={() => loadVodCatalog(true)}
-            onAiDiscoverVod={(topic) => discoverVodWithAi(topic, false)}
-            onExtractCinemaFromLive={() => {
-              const cinemaItems = allChannels.filter(
-                (c) => c.smartCategory === 'Sinema & Dizi'
-              );
-              const lines = ['#EXTM3U'];
-              for (const c of cinemaItems) {
-                const logoAttr = c.logoUrl ? ` tvg-logo="${c.logoUrl}"` : '';
-                lines.push(
-                  `#EXTINF:-1 tvg-name="${c.name.replace(/"/g, '')}"${logoAttr} group-title="Sinema & Dizi",${c.name}`
-                );
-                lines.push(c.streamUrl);
-              }
-              const content = lines.join('\n');
-              const added = mergeVodM3uContent(content);
-              setStatusMessage(
-                added > 0
-                  ? `${added} canlı sinema/dizi yayını otomatik kategorilere eklendi.`
-                  : 'Canlı yayınlardaki sinema/dizi kanalları zaten listede mevcut.'
-              );
-            }}
           />
         </aside>
 
@@ -3440,17 +3332,11 @@ export default function App() {
                 seekStepSeconds={settings.playerSeekStepSeconds}
                 lowRamMode={settings.lowRamMode}
                 acceleratedPlaybackMode={settings.acceleratedPlaybackMode}
-                onToggleAcceleratedMode={() =>
-                  updateSettings({
-                    acceleratedPlaybackMode: !settings.acceleratedPlaybackMode,
-                  })
-                }
                 radioEffectMode={settings.radioEffectMode}
                 radioEffectIntensity={settings.radioEffectIntensity}
                 radioShowLogo={settings.radioShowLogoInStage}
                 radioBackgroundImage={settings.radioBackgroundImage}
                 epgMap={activeEpgMap}
-                perfMap={perfMap}
                 onChannelPerfEvent={handleChannelPerfEvent}
                 vodResumeTime={
                   currentChannel && settings.resumeLastChannel
@@ -3492,7 +3378,7 @@ export default function App() {
             )}
           </div>
 
-          {!isLeftVodOpen && !isFullscreen && (
+          {!isLeftVodOpen && !isFullscreen && multiScreenLayout > 1 && (
             <button
               type="button"
               onClick={() => {
@@ -3506,7 +3392,7 @@ export default function App() {
             </button>
           )}
 
-          {!isSidePanelOpen && !isFullscreen && (
+          {!isSidePanelOpen && !isFullscreen && multiScreenLayout > 1 && (
             <button
               type="button"
               onClick={() => {
@@ -3516,62 +3402,50 @@ export default function App() {
               className="touch-compact absolute top-14 right-3 z-25 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/80 border border-[var(--accent)] text-[var(--accent)] text-xs font-bold shadow-xl hover:bg-black"
             >
               <PanelRightOpen className="w-4 h-4" />
-              <span>Kanallar &amp; Favoriler</span>
+              <span>Kanallar</span>
             </button>
           )}
 
-          {/* Desktop/TV Below-Stage Info & EPG Bar */}
-          {currentChannel && multiScreenLayout === 1 && isSidePanelOpen && (
-            <div className="hidden lg:flex shrink-0 items-center justify-between gap-4 px-4 py-2.5 bg-[var(--surface-2)] border-t border-[var(--border)]">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm font-extrabold text-[var(--ink)] truncate">
-                    {currentChannel.name}
+          {/* Desktop/TV Below-Stage EPG Strip (shown only when active live EPG data exists) */}
+          {currentChannel &&
+            !currentChannel.isRadio &&
+            multiScreenLayout === 1 &&
+            isSidePanelOpen &&
+            currentEpg?.now && (
+              <div className="hidden lg:flex shrink-0 items-center justify-between gap-4 px-4 py-2 bg-[var(--surface-2)] border-t border-[var(--border)]">
+                <div className="min-w-0 flex-1 flex items-center gap-3">
+                  <span className="text-xs font-bold text-[var(--accent)] truncate">
+                    {currentEpg.now.title}
                   </span>
-                  <span className="text-xs text-[var(--muted)] truncate">
-                    · {currentChannel.smartCategory}
+                  <span className="font-mono-nums text-[11px] text-[var(--muted)] shrink-0">
+                    {formatEpgTime(currentEpg.now.startMs)} –{' '}
+                    {formatEpgTime(currentEpg.now.stopMs)}
                   </span>
+                  <div className="w-24 h-1 rounded bg-[var(--bg)] overflow-hidden shrink-0">
+                    <div
+                      className="h-full bg-[var(--accent)]"
+                      style={{ width: `${currentEpgProgress}%` }}
+                    />
+                  </div>
+                  {currentEpg.next && (
+                    <span className="text-xs text-[var(--muted)] truncate">
+                      Sonraki: {currentEpg.next.title}
+                    </span>
+                  )}
                 </div>
-                {currentEpg?.now ? (
-                  <div className="mt-1 flex items-center gap-3">
-                    <span className="text-xs font-semibold text-[var(--accent)] truncate">
-                      Şimdi: {currentEpg.now.title}
-                    </span>
-                    <span className="font-mono-nums text-[11px] text-[var(--muted)] shrink-0">
-                      {formatEpgTime(currentEpg.now.startMs)} –{' '}
-                      {formatEpgTime(currentEpg.now.stopMs)}
-                    </span>
-                    <div className="w-24 h-1.5 rounded bg-[var(--bg)] overflow-hidden shrink-0">
-                      <div
-                        className="h-full bg-[var(--accent)]"
-                        style={{ width: `${currentEpgProgress}%` }}
-                      />
-                    </div>
-                    {currentEpg.next && (
-                      <span className="text-xs text-[var(--muted)] truncate">
-                        Sonraki: {currentEpg.next.title}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-0.5 text-xs text-[var(--muted)]">
-                    Hazırlayan: Mehmet Cengiz Akdağ · Kumanda ile Ok tuşları / Enter
-                  </div>
+
+                {settings.epgEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => setShowEpgDialog(true)}
+                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-xs font-semibold text-[var(--ink)] hover:border-[var(--accent)]"
+                  >
+                    <CalendarClock className="w-3.5 h-3.5 text-[var(--accent)]" />
+                    <span>Yayın Akışı</span>
+                  </button>
                 )}
               </div>
-
-              {!currentChannel.isRadio && settings.epgEnabled && (
-                <button
-                  type="button"
-                  onClick={() => setShowEpgDialog(true)}
-                  className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-xs font-semibold text-[var(--ink)] hover:border-[var(--accent)]"
-                >
-                  <CalendarClock className="w-3.5 h-3.5 text-[var(--accent)]" />
-                  <span>Yayın Akışı</span>
-                </button>
-              )}
-            </div>
-          )}
+            )}
         </section>
 
         {/* Zone 3 (RIGHT on Desktop/TV/Landscape, MAIN PANE on Mobile Portrait): Kanallar | Favoriler | Radyo | Ayarlar */}
@@ -3614,27 +3488,23 @@ export default function App() {
                   : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--ink)] hover:border-[var(--accent)]/60'
               }`}
             >
-              <div className="flex items-center gap-1">
-                <Heart
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    activeTab === 'favorites'
-                      ? 'fill-current'
-                      : favoriteChannels.length > 0
-                      ? 'fill-[var(--live)] text-[var(--live)]'
-                      : 'text-[var(--live)]'
-                  }`}
-                />
-                <span
-                  className={`font-mono-nums text-[9px] lg:text-[10px] px-1 rounded leading-tight ${
-                    activeTab === 'favorites'
-                      ? 'bg-black/20 text-[var(--accent-ink)]'
-                      : 'bg-[var(--bg)] text-[var(--accent)]'
-                  }`}
-                >
-                  {favoriteChannels.length}
-                </span>
-              </div>
-              <span>Favoriler</span>
+              <Heart
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  activeTab === 'favorites'
+                    ? 'fill-current'
+                    : favoriteChannels.length > 0
+                    ? 'fill-[var(--live)] text-[var(--live)]'
+                    : 'text-[var(--live)]'
+                }`}
+              />
+              <span>
+                Favoriler
+                {favoriteChannels.length > 0 && (
+                  <span className="font-mono-nums opacity-80 ml-1">
+                    ({favoriteChannels.length})
+                  </span>
+                )}
+              </span>
             </button>
 
             <button
@@ -3729,118 +3599,51 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Akıllı Gruplandırma Filtresi (Tüm Cihazlar: Mobil + TV + Masaüstü) */}
+              {/* Clean Single-Row Category Filter Bar (Adult filter, smart sorting & grouping run automatically) */}
               <div
                 data-nav-zone="smart-groups"
-                className="shrink-0 mx-3 mb-2 rounded-xl bg-[var(--surface-2)] border border-[var(--border)] p-2 space-y-1.5"
+                className="shrink-0 px-3 pb-2 flex items-center gap-1.5 overflow-x-auto touch-scroll-x"
               >
-                <div className="flex items-center justify-between gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setSmartGroupExpanded((v) => !v)}
-                    className="touch-compact flex items-center gap-1.5 min-w-0 text-left hover:text-[var(--accent)] transition-colors"
-                  >
-                    <Layers className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
-                    <span className="text-[11px] font-extrabold text-[var(--ink)] truncate">
-                      Akıllı Gruplandırma
-                    </span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--accent)] shrink-0 font-mono-nums">
-                      {activeSmartGroups.length > 0
-                        ? `${activeSmartGroups.length} tür`
-                        : selectedCategory}
-                    </span>
-                    {smartGroupExpanded ? (
-                      <ChevronUp className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
-                    )}
-                  </button>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    {settings.hideAdultContent && (
-                      <span
-                        title="Yetişkin (+18) içerikler gizli"
-                        className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] text-[9px] font-bold text-[var(--accent)]"
-                      >
-                        <ShieldCheck className="w-2.5 h-2.5" />
-                        <span>+18 Kapalı</span>
-                      </span>
-                    )}
+                {visibleCategories.map((category) => {
+                  const isAll = category === 'Tümü';
+                  const selected = isAll
+                    ? activeSmartGroups.length === 0 && selectedCategory === 'Tümü'
+                    : activeSmartGroups.length > 0
+                    ? activeSmartGroups.includes(category)
+                    : selectedCategory === category;
+                  const count = categoryCounts.get(category) ?? 0;
+                  return (
                     <button
+                      key={category}
                       type="button"
-                      onClick={() =>
-                        updateSettings({
-                          groupChannelsByCategory: !settings.groupChannelsByCategory,
-                        })
-                      }
-                      title="Türlere göre başlıklarla grupla"
-                      className={`touch-compact px-2 py-0.5 rounded-lg text-[10px] font-bold transition-colors ${
-                        settings.groupChannelsByCategory
-                          ? 'bg-[var(--accent)]/20 border border-[var(--accent)]/60 text-[var(--accent)]'
-                          : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)]'
+                      data-focus-inset="true"
+                      onClick={() => toggleSmartGroupFilter(category)}
+                      className={`touch-compact shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] transition-colors whitespace-nowrap ${
+                        selected
+                          ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
+                          : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
                       }`}
                     >
-                      Grupla
+                      {selected && !isAll && <Check className="w-3 h-3 shrink-0" />}
+                      <span>{category}</span>
+                      <span className="font-mono-nums text-[10px] opacity-75">
+                        {count}
+                      </span>
                     </button>
-                    {(activeSmartGroups.length > 0 || selectedCategory !== 'Tümü') && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          updateSettings({ smartGroupFilters: [] });
-                          setSelectedCategory('Tümü');
-                        }}
-                        className="touch-compact px-1.5 py-0.5 rounded-lg text-[10px] font-bold text-[var(--live)] hover:bg-white/5"
-                      >
-                        Sıfırla
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div
-                  className={
-                    smartGroupExpanded
-                      ? 'flex flex-wrap items-center gap-1.5 pt-0.5'
-                      : 'flex items-center gap-1.5 overflow-x-auto touch-scroll-x pb-0.5'
-                  }
-                >
-                  {visibleCategories.map((category) => {
-                    const isAll = category === 'Tümü';
-                    const selected = isAll
-                      ? activeSmartGroups.length === 0 && selectedCategory === 'Tümü'
-                      : activeSmartGroups.length > 0
-                      ? activeSmartGroups.includes(category)
-                      : selectedCategory === category;
-                    const count = categoryCounts.get(category) ?? 0;
-                    return (
-                      <button
-                        key={category}
-                        type="button"
-                        data-focus-inset="true"
-                        onClick={() => toggleSmartGroupFilter(category)}
-                        className={`touch-compact shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] transition-colors whitespace-nowrap ${
-                          selected
-                            ? 'bg-[var(--accent)] text-[var(--accent-ink)] font-bold'
-                            : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] hover:text-[var(--ink)]'
-                        }`}
-                      >
-                        {selected && !isAll ? (
-                          <Check className="w-3 h-3 shrink-0" />
-                        ) : (
-                          <CategoryIcon
-                            category={category}
-                            selected={selected}
-                            className="w-3 h-3 shrink-0"
-                          />
-                        )}
-                        <span>{category}</span>
-                        <span className="font-mono-nums text-[10px] opacity-75">
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                  );
+                })}
+                {(activeSmartGroups.length > 0 || selectedCategory !== 'Tümü') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateSettings({ smartGroupFilters: [] });
+                      setSelectedCategory('Tümü');
+                    }}
+                    className="touch-compact shrink-0 px-2 py-1.5 rounded-lg text-[11px] font-bold text-[var(--live)] hover:bg-white/5 whitespace-nowrap"
+                  >
+                    Sıfırla
+                  </button>
+                )}
               </div>
 
               {isLoading ? (
@@ -3898,7 +3701,6 @@ export default function App() {
                               : lookupEpgForChannel(activeEpgMap, channel.name)?.now
                                   ?.title ?? null
                           }
-                          perfStats={perfMap[getChannelPerfKey(channel)] ?? null}
                           isPlaying={
                             multiScreenLayout > 1
                               ? multiSlots
@@ -4027,7 +3829,6 @@ export default function App() {
                         : lookupEpgForChannel(activeEpgMap, channel.name)?.now?.title ??
                           null
                     }
-                    perfStats={perfMap[getChannelPerfKey(channel)] ?? null}
                     isPlaying={
                       multiScreenLayout > 1
                         ? multiSlots
@@ -4091,9 +3892,6 @@ export default function App() {
                 progressMap={vodProgressMap}
                 favoriteIds={favoriteIds}
                 currentChannel={currentChannel}
-                cinemaLiveCount={
-                  allChannels.filter((c) => c.smartCategory === 'Sinema & Dizi').length
-                }
                 isLoadingVod={isLoadingVod}
                 isAiDiscoveringVod={isAiDiscoveringVod}
                 onPlayVodItem={(item) => handleSelectChannel(vodItemToChannel(item))}
@@ -4101,27 +3899,6 @@ export default function App() {
                 onToggleFavorite={toggleFavorite}
                 onOpenImportModal={() => setShowVodModal(true)}
                 onRefreshVodCatalog={() => loadVodCatalog(true)}
-                onAiDiscoverVod={(topic) => discoverVodWithAi(topic, false)}
-                onExtractCinemaFromLive={() => {
-                  const cinemaItems = allChannels.filter(
-                    (c) => c.smartCategory === 'Sinema & Dizi'
-                  );
-                  const lines = ['#EXTM3U'];
-                  for (const c of cinemaItems) {
-                    const logoAttr = c.logoUrl ? ` tvg-logo="${c.logoUrl}"` : '';
-                    lines.push(
-                      `#EXTINF:-1 tvg-name="${c.name.replace(/"/g, '')}"${logoAttr} group-title="Sinema & Dizi",${c.name}`
-                    );
-                    lines.push(c.streamUrl);
-                  }
-                  const content = lines.join('\n');
-                  const added = mergeVodM3uContent(content);
-                  setStatusMessage(
-                    added > 0
-                      ? `${added} canlı sinema/dizi yayını otomatik kategorilere eklendi.`
-                      : 'Canlı yayınlardaki sinema/dizi kanalları zaten listede mevcut.'
-                  );
-                }}
               />
             </div>
           )}

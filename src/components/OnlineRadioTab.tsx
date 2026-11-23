@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Globe, Radio, RefreshCw, Search, X } from 'lucide-react';
 import type { Channel } from '../types/channel';
 import {
-  getChannelPerfKey,
+  sortChannelsByPerformance,
   type ChannelPerfStats,
 } from '../utils/channelPerformance';
 import { ChannelRowItem } from './ChannelRowItem';
@@ -97,7 +97,7 @@ export function OnlineRadioTab({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLocaleLowerCase('tr-TR');
-    return sourceList.filter((ch) => {
+    const matched = sourceList.filter((ch) => {
       if (!matchesGenre(ch, genre)) return false;
       if (!q) return true;
       return (
@@ -105,7 +105,8 @@ export function OnlineRadioTab({
         (ch.tags ?? '').toLocaleLowerCase('tr-TR').includes(q)
       );
     });
-  }, [sourceList, genre, query]);
+    return sortChannelsByPerformance(matched, perfMap);
+  }, [sourceList, genre, query, perfMap]);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -211,7 +212,6 @@ export function OnlineRadioTab({
                     ? `${station.codec} · ${station.bitrate} kbps`
                     : 'Canlı Radyo',
               }}
-              perfStats={perfMap[getChannelPerfKey(station)] ?? null}
               isPlaying={currentChannel?.id === station.id}
               isFavorite={favoriteIds.has(station.name)}
               onSelect={() => onSelectChannel(station)}

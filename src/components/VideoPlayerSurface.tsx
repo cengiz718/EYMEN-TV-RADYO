@@ -21,10 +21,7 @@ import {
   Search,
   SkipBack,
   SkipForward,
-  Volume2,
-  VolumeX,
   X,
-  Zap,
 } from 'lucide-react';
 import type {
   AspectMode,
@@ -37,16 +34,25 @@ import type {
   RadioEffectMode,
 } from '../types/channel';
 import { computeEpgProgress, formatEpgTime, lookupEpgForChannel } from '../utils/epg';
-import { buildHlsConfig, getHlsProfileSummary } from '../utils/hlsConfig';
-import {
-  getChannelPerfKey,
-  type ChannelPerfEvent,
-  type ChannelPerfStats,
-} from '../utils/channelPerformance';
+import { buildHlsConfig } from '../utils/hlsConfig';
+import { type ChannelPerfEvent } from '../utils/channelPerformance';
 import { RadioVisualizerOverlay } from './RadioVisualizerOverlay';
 import { ChannelRowItem } from './ChannelRowItem';
 import { useIdleAutoClose } from '../hooks/useIdleAutoClose';
 import { logAppError } from '../utils/errorLogger';
+import {
+  getRemoteDirection,
+  isRemoteBackKey,
+  isRemoteChannelDownKey,
+  isRemoteChannelUpKey,
+  isRemoteFastForward,
+  isRemoteMediaPlayPause,
+  isRemoteMenuKey,
+  isRemoteRewind,
+  isRemoteSelectKey,
+  isTextInputElement,
+  triggerElementActivation,
+} from '../utils/remoteKeys';
 
 interface VideoPlayerSurfaceProps {
   currentChannel: Channel | null;
@@ -72,7 +78,6 @@ interface VideoPlayerSurfaceProps {
   vodResumeTime?: number;
   lowRamMode?: boolean;
   acceleratedPlaybackMode?: boolean;
-  onToggleAcceleratedMode?: () => void;
   onVodProgress?: (channelId: string, currentTime: number, duration: number) => void;
   onPlaybackStateChange?: (playing: boolean) => void;
   onSelectChannel: (channel: Channel) => void;
@@ -87,31 +92,9 @@ interface VideoPlayerSurfaceProps {
   onToggleSidePanel?: () => void;
   isLeftVodOpen?: boolean;
   onToggleLeftVod?: () => void;
-  perfMap?: Record<string, ChannelPerfStats>;
   onChannelPerfEvent?: (channel: Channel, event: ChannelPerfEvent) => void;
   onPrev: () => void;
   onNext: () => void;
-}
-
-function isBackKey(e: KeyboardEvent): boolean {
-  return (
-    e.key === 'Escape' ||
-    e.key === 'GoBack' ||
-    e.key === 'BrowserBack' ||
-    e.key === 'Back' ||
-    e.key === 'Backspace' ||
-    e.keyCode === 4 ||
-    e.keyCode === 461
-  );
-}
-
-function isSelectKey(e: KeyboardEvent): boolean {
-  return (
-    e.key === 'Enter' ||
-    e.key === 'NumpadEnter' ||
-    e.key === 'Select' ||
-    e.key === 'DPadCenter'
-  );
 }
 
 export function VideoPlayerSurface({
@@ -138,7 +121,6 @@ export function VideoPlayerSurface({
   vodResumeTime = 0,
   lowRamMode = true,
   acceleratedPlaybackMode = true,
-  onToggleAcceleratedMode,
   onVodProgress,
   onPlaybackStateChange,
   onSelectChannel,
@@ -153,7 +135,6 @@ export function VideoPlayerSurface({
   onToggleSidePanel,
   isLeftVodOpen = true,
   onToggleLeftVod,
-  perfMap = {},
   onChannelPerfEvent,
   onPrev,
   onNext,
@@ -172,16 +153,6 @@ export function VideoPlayerSurface({
   const [isBuffering, setIsBuffering] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [volume, setVolume] = useState<number>(() => {
-    try {
-      const saved = Number(localStorage.getItem('eymen_player_volume_v1'));
-      return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 1;
-    } catch {
-      return 1;
-    }
-  });
-  const [needsUnmutePrompt, setNeedsUnmutePrompt] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [streamAttemptIdx, setStreamAttemptIdx] = useState(0);
   const [audioTracks, setAudioTracks] = useState<Array<{ id: number; name: string }>>([]);
@@ -324,18 +295,13 @@ export function VideoPlayerSurface({
     }
   }, [currentChannel?.id]);
 
-  // Apply persisted volume slider smoothly
+  // Keep HTML5 video output at full level; device hardware remote controls volume
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
-      video.volume = volume;
+      video.volume = 1;
     }
-    try {
-      localStorage.setItem('eymen_player_volume_v1', String(volume));
-    } catch {
-      // ignore
-    }
-  }, [volume]);
+  }, [currentChannel?.id]);
 
   // Load & play stream via /api/stream proxy (with automatic backupUrls failover)
   useEffect(() => {
@@ -357,7 +323,6 @@ export function VideoPlayerSurface({
 
     setPlayerError(null);
     setIsBuffering(true);
-    setNeedsUnmutePrompt(false);
     setAudioTracks([]);
     setActiveAudioTrack(-1);
     setSubtitleTracks([]);
@@ -403,15 +368,27 @@ export function VideoPlayerSurface({
       return false;
     };
 
+    let unmuteCleanup: (() => void) | null = null;
     const attemptPlay = async () => {
       try {
+        video.volume = 1;
         await video.play();
         setIsPlaying(true);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
           video.muted = true;
-          setIsMuted(true);
-          setNeedsUnmutePrompt(true);
+          const autoUnmute = () => {
+            video.muted = false;
+            video.volume = 1;
+            unmuteCleanup?.();
+            unmuteCleanup = null;
+          };
+          window.addEventListener('pointerdown', autoUnmute, { passive: true, once: true });
+          window.addEventListener('keydown', autoUnmute, { once: true });
+          unmuteCleanup = () => {
+            window.removeEventListener('pointerdown', autoUnmute);
+            window.removeEventListener('keydown', autoUnmute);
+          };
           try {
             await video.play();
             setIsPlaying(true);
@@ -606,6 +583,7 @@ export function VideoPlayerSurface({
     }
 
     return () => {
+      unmuteCleanup?.();
       if (recoveryTimer !== null) {
         window.clearTimeout(recoveryTimer);
       }
@@ -680,7 +658,11 @@ export function VideoPlayerSurface({
       if (!container) return false;
       const buttons = Array.from(
         container.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')
-      );
+      ).filter((el) => {
+        if (el.offsetParent === null) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
       if (buttons.length === 0) return false;
       const idx = buttons.indexOf(document.activeElement as HTMLElement);
       if (idx === -1) {
@@ -694,60 +676,67 @@ export function VideoPlayerSurface({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      const isTyping =
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable) &&
-        (target as HTMLInputElement).type !== 'range';
+      const active = document.activeElement as HTMLElement | null;
+      const isTyping = isTextInputElement(active ?? target);
 
       // Global TV Media & Channel keys (work in both normal & fullscreen)
-      if (e.key === 'MediaTrackNext' || e.key === 'ChannelUp' || e.key === 'F9') {
+      if (isRemoteChannelUpKey(e)) {
         e.preventDefault();
+        e.stopPropagation();
         onNext();
         resetHudTimer();
         return;
       }
-      if (e.key === 'MediaTrackPrevious' || e.key === 'ChannelDown' || e.key === 'F10') {
+      if (isRemoteChannelDownKey(e)) {
         e.preventDefault();
+        e.stopPropagation();
         onPrev();
         resetHudTimer();
         return;
       }
-      if (
-        e.key === 'MediaPlayPause' ||
-        e.key === 'MediaPlay' ||
-        e.key === 'MediaPause'
-      ) {
+      const mediaAction = isRemoteMediaPlayPause(e);
+      if (mediaAction) {
         e.preventDefault();
+        e.stopPropagation();
         const video = videoRef.current;
         if (video) {
-          if (e.key === 'MediaPlay') void video.play();
-          else if (e.key === 'MediaPause') video.pause();
+          if (mediaAction === 'play') void video.play();
+          else if (mediaAction === 'pause') video.pause();
           else togglePlayPause();
         }
         return;
       }
-      if (e.key === 'MediaFastForward') {
+      if (isRemoteFastForward(e)) {
         e.preventDefault();
+        e.stopPropagation();
         seekBySeconds(seekStepSeconds);
         return;
       }
-      if (e.key === 'MediaRewind') {
+      if (isRemoteRewind(e)) {
         e.preventDefault();
+        e.stopPropagation();
         seekBySeconds(-seekStepSeconds);
         return;
       }
 
+      const dir = getRemoteDirection(e);
+
       if (isTyping) {
-        if (isBackKey(e) && drawerOpen) {
+        if (isRemoteBackKey(e, true) && drawerOpen) {
           e.preventDefault();
           e.stopPropagation();
           setDrawerOpen(false);
-        } else if (e.key === 'ArrowDown' && drawerOpen) {
+        } else if (dir === 'down' && drawerOpen) {
           e.preventDefault();
-          const firstRow = drawerListRef.current?.querySelector<HTMLElement>('[data-channel-id]');
-          firstRow?.focus();
+          e.stopPropagation();
+          const firstQuick =
+            drawerQuickTabsRef.current?.querySelector<HTMLElement>('[data-selected="true"]') ??
+            drawerQuickTabsRef.current?.querySelector<HTMLElement>('button');
+          if (firstQuick) {
+            firstQuick.focus();
+          } else {
+            drawerListRef.current?.querySelector<HTMLElement>('[data-channel-id]')?.focus();
+          }
         }
         return;
       }
@@ -763,7 +752,7 @@ export function VideoPlayerSurface({
       // Fullscreen Mi Box TV Remote Navigation
       resetHudTimer();
 
-      if (isBackKey(e)) {
+      if (isRemoteBackKey(e, false)) {
         e.preventDefault();
         e.stopPropagation();
         if (drawerOpen) {
@@ -779,25 +768,41 @@ export function VideoPlayerSurface({
         e.key === 'L' ||
         e.key === 'm' ||
         e.key === 'M' ||
-        e.key === 'ContextMenu' ||
-        e.key === 'Guide'
+        isRemoteMenuKey(e)
       ) {
         e.preventDefault();
+        e.stopPropagation();
         setDrawerOpen((prev) => !prev);
         return;
       }
 
       if (drawerOpen) {
-        const active = document.activeElement as HTMLElement | null;
         const rows = Array.from(
           drawerListRef.current?.querySelectorAll<HTMLElement>('[data-channel-id]') ?? []
         );
-        const rowIdx = active ? rows.indexOf(active) : -1;
+        const rowEl = active?.closest<HTMLElement>('[data-channel-id]') ?? null;
+        const isFavBtn =
+          active?.tagName === 'BUTTON' && active.getAttribute('aria-label') === 'Favori';
+        const rowIdx = rowEl ? rows.indexOf(rowEl) : -1;
         const inQuickTabs = Boolean(active && drawerQuickTabsRef.current?.contains(active));
         const inCatBar = Boolean(active && drawerCatsRef.current?.contains(active));
 
-        if (e.key === 'ArrowDown') {
+        if (isRemoteSelectKey(e)) {
+          if (active && containerRef.current?.contains(active)) {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerElementActivation(active);
+          } else {
+            e.preventDefault();
+            e.stopPropagation();
+            rows[0]?.focus();
+          }
+          return;
+        }
+
+        if (dir === 'down') {
           e.preventDefault();
+          e.stopPropagation();
           if (inQuickTabs) {
             const firstCat =
               drawerCatsRef.current?.querySelector<HTMLElement>('[data-selected="true"]') ??
@@ -816,8 +821,9 @@ export function VideoPlayerSurface({
             targetRow?.focus();
             targetRow?.scrollIntoView({ block: 'nearest' });
           }
-        } else if (e.key === 'ArrowUp') {
+        } else if (dir === 'up') {
           e.preventDefault();
+          e.stopPropagation();
           if (rowIdx > 0) {
             const prevRow = rows[rowIdx - 1];
             prevRow?.focus();
@@ -836,124 +842,127 @@ export function VideoPlayerSurface({
           } else if (inQuickTabs) {
             drawerSearchRef.current?.focus();
           }
-        } else if (e.key === 'ArrowLeft') {
+        } else if (dir === 'left') {
           e.preventDefault();
+          e.stopPropagation();
           if (inQuickTabs) {
             moveFocusInRow(drawerQuickTabsRef.current, -1);
           } else if (inCatBar) {
             moveFocusInRow(drawerCatsRef.current, -1);
+          } else if (isFavBtn && rowEl) {
+            rowEl.focus();
           } else {
             setDrawerOpen(false);
           }
-        } else if (e.key === 'ArrowRight') {
+        } else if (dir === 'right') {
           e.preventDefault();
+          e.stopPropagation();
           if (inQuickTabs) {
             moveFocusInRow(drawerQuickTabsRef.current, 1);
           } else if (inCatBar) {
             moveFocusInRow(drawerCatsRef.current, 1);
-          } else if (visibleCategories.length > 0) {
-            const idx = visibleCategories.indexOf(selectedCategory);
-            const nextCat =
-              visibleCategories[(idx + 1) % visibleCategories.length];
-            onSelectCategory(nextCat);
+          } else if (!isFavBtn && rowEl) {
+            const favBtn = rowEl.querySelector<HTMLElement>('button[aria-label="Favori"]');
+            favBtn?.focus();
           }
-        } else if (isSelectKey(e) && active && !containerRef.current?.contains(active)) {
-          e.preventDefault();
-          rows[0]?.focus();
         }
         return;
       }
 
       // Fullscreen Video Mode (drawer closed)
-      const active = document.activeElement as HTMLElement | null;
       const isInTopBar = Boolean(active && topBarRef.current?.contains(active));
       const isInBottomBar = Boolean(active && bottomBarRef.current?.contains(active));
 
       if (isInTopBar || isInBottomBar) {
-        if (e.key === 'ArrowLeft') {
+        if (dir === 'left') {
           e.preventDefault();
+          e.stopPropagation();
           moveFocusInRow(isInTopBar ? topBarRef.current : bottomBarRef.current, -1);
           return;
         }
-        if (e.key === 'ArrowRight') {
+        if (dir === 'right') {
           e.preventDefault();
+          e.stopPropagation();
           moveFocusInRow(isInTopBar ? topBarRef.current : bottomBarRef.current, 1);
           return;
         }
-        if (e.key === 'ArrowUp') {
+        if (dir === 'up') {
           e.preventDefault();
+          e.stopPropagation();
           if (isInBottomBar) {
             moveFocusInRow(topBarRef.current, 0);
           } else {
-            (active as HTMLElement)?.blur();
+            active?.blur();
             setHudVisible(false);
           }
           return;
         }
-        if (e.key === 'ArrowDown') {
+        if (dir === 'down') {
           e.preventDefault();
+          e.stopPropagation();
           if (isInTopBar) {
-            if (playBtnRef.current) {
+            if (playBtnRef.current && playBtnRef.current.offsetParent !== null) {
               playBtnRef.current.focus();
             } else {
               moveFocusInRow(bottomBarRef.current, 0);
             }
           } else {
-            (active as HTMLElement)?.blur();
+            active?.blur();
             setHudVisible(false);
           }
           return;
         }
-        if (isSelectKey(e)) {
-          if (e.key === 'Select' || e.key === 'DPadCenter') {
-            e.preventDefault();
-            active?.click();
-          }
+        if (isRemoteSelectKey(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+          triggerElementActivation(active);
           return;
         }
       }
 
-      if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+      if (dir === 'up') {
         e.preventDefault();
+        e.stopPropagation();
         if (isVodMode) {
           setHudVisible(true);
           window.setTimeout(() => playBtnRef.current?.focus(), 20);
         } else {
           onPrev();
         }
-      } else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+      } else if (dir === 'down') {
         e.preventDefault();
+        e.stopPropagation();
         if (isVodMode) {
           setDrawerOpen(true);
         } else {
           onNext();
         }
-      } else if (e.key === 'ArrowLeft') {
+      } else if (dir === 'left') {
         e.preventDefault();
+        e.stopPropagation();
         if (isVodMode) {
           seekBySeconds(-seekStepSeconds);
         } else {
           setDrawerOpen(true);
         }
-      } else if (e.key === 'ArrowRight') {
+      } else if (dir === 'right') {
         e.preventDefault();
+        e.stopPropagation();
         if (isVodMode) {
           seekBySeconds(seekStepSeconds);
         } else {
           setHudVisible(true);
           window.setTimeout(() => playBtnRef.current?.focus(), 20);
         }
-      } else if (isSelectKey(e)) {
+      } else if (isRemoteSelectKey(e)) {
         e.preventDefault();
+        e.stopPropagation();
         if (!hudVisible) {
           setHudVisible(true);
           window.setTimeout(() => playBtnRef.current?.focus(), 20);
         } else {
           togglePlayPause();
         }
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        togglePlayPause();
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         onToggleFullscreen(false);
@@ -970,29 +979,14 @@ export function VideoPlayerSurface({
     channels,
     drawerLimit,
     currentChannel,
-    selectedCategory,
-    visibleCategories,
     seekStepSeconds,
     onNext,
     onPrev,
-    onSelectCategory,
     onToggleFullscreen,
     resetHudTimer,
     togglePlayPause,
     seekBySeconds,
   ]);
-
-  const toggleMute = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setIsMuted(video.muted);
-    if (!video.muted) {
-      setNeedsUnmutePrompt(false);
-      if (volume === 0) setVolume(0.75);
-    }
-    resetHudTimer();
-  };
 
   const cycleAudioTrack = () => {
     const hls = hlsRef.current;
@@ -1113,13 +1107,6 @@ export function VideoPlayerSurface({
     drawerOpen ||
     !!playerError;
 
-  const hlsSummary = getHlsProfileSummary({
-    acceleratedPlaybackMode,
-    bufferPreset,
-    lowRamMode,
-    isMultiScreen: false,
-  });
-
   const currentEpg = currentChannel
     ? lookupEpgForChannel(epgMap, currentChannel.name)
     : null;
@@ -1164,6 +1151,7 @@ export function VideoPlayerSurface({
   return (
     <div
       ref={containerRef}
+      onFocusCapture={() => resetHudTimer()}
       onMouseMove={() => {
         if (Date.now() - lastTouchTimeRef.current < 900) return;
         resetHudTimer();
@@ -1335,43 +1323,6 @@ export function VideoPlayerSurface({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          {onToggleAcceleratedMode && (
-            <button
-              type="button"
-              onClick={() => {
-                const nextVal = !acceleratedPlaybackMode;
-                onToggleAcceleratedMode();
-                setSeekToast(
-                  nextVal
-                    ? 'Hızlandırılmış Oynatma Açıldı (Anti-Donma HLS)'
-                    : 'Standart Oynatma Modu'
-                );
-                if (seekToastTimerRef.current !== null) {
-                  window.clearTimeout(seekToastTimerRef.current);
-                }
-                seekToastTimerRef.current = window.setTimeout(
-                  () => setSeekToast(null),
-                  1800
-                );
-                resetHudTimer();
-              }}
-              title={
-                acceleratedPlaybackMode
-                  ? 'Hızlandırılmış Oynatma Modu: Açık (Kapatmak için tıkla)'
-                  : 'Hızlandırılmış Oynatma Modu: Kapalı (Açmak için tıkla)'
-              }
-              className={`${btnPadCls} ${
-                acceleratedPlaybackMode
-                  ? 'bg-[var(--accent)] text-[var(--accent-ink)] border border-[var(--accent)] shadow-lg'
-                  : `${frameCls} text-white/80`
-              } flex items-center gap-1 transition-colors`}
-            >
-              <Zap className={iconSizeCls} />
-              <span className="hidden md:inline text-[11px] font-extrabold">
-                {acceleratedPlaybackMode ? 'Hızlı Mod' : 'Normal'}
-              </span>
-            </button>
-          )}
           {onEnableMultiScreen && (
             <button
               type="button"
@@ -1436,42 +1387,6 @@ export function VideoPlayerSurface({
               <Captions className={iconSizeCls} />
             </button>
           )}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={toggleMute}
-              title={isMuted ? 'Sesi Aç' : 'Sessiz'}
-              className={`${btnPadCls} ${frameCls} text-white transition-colors`}
-            >
-              {isMuted || volume === 0 ? (
-                <VolumeX className={`${iconSizeCls} text-[var(--accent)]`} />
-              ) : (
-                <Volume2 className={iconSizeCls} />
-              )}
-            </button>
-            <input
-              type="range"
-              aria-label="Ses Seviyesi"
-              min={0}
-              max={1}
-              step={0.05}
-              value={isMuted ? 0 : volume}
-              onChange={(e) => {
-                const nextVol = Number(e.target.value);
-                setVolume(nextVol);
-                if (videoRef.current) {
-                  videoRef.current.volume = nextVol;
-                  if (nextVol > 0 && videoRef.current.muted) {
-                    videoRef.current.muted = false;
-                    setIsMuted(false);
-                    setNeedsUnmutePrompt(false);
-                  }
-                }
-                resetHudTimer();
-              }}
-              className="hidden sm:block w-16 md:w-20 h-1.5 accent-[var(--accent)] cursor-pointer"
-            />
-          </div>
           {!isFullscreen && onToggleLeftVod && (
             <button
               type="button"
@@ -1479,18 +1394,15 @@ export function VideoPlayerSurface({
                 resetHudTimer();
                 onToggleLeftVod();
               }}
-              title={isLeftVodOpen ? 'Sol Film & Dizi Panelini Gizle' : 'Sol Film & Dizi Panelini Aç'}
+              title={isLeftVodOpen ? 'Film & Dizi Panelini Gizle' : 'Film & Dizi Panelini Aç'}
               aria-label={isLeftVodOpen ? 'Film & Dizi Gizle' : 'Film & Dizi Aç'}
-              className={`hidden md:flex ${btnPadCls} ${frameCls} items-center gap-1.5 text-[var(--accent)] transition-colors whitespace-nowrap`}
+              className={`hidden md:flex ${btnPadCls} ${frameCls} items-center text-[var(--accent)] transition-colors`}
             >
               {isLeftVodOpen ? (
                 <PanelLeftClose className={iconSizeCls} />
               ) : (
                 <PanelLeftOpen className={iconSizeCls} />
               )}
-              <span className="hidden lg:inline text-[11px] font-bold">
-                Film &amp; Dizi
-              </span>
             </button>
           )}
           {!isFullscreen && onToggleSidePanel && (
@@ -1500,47 +1412,24 @@ export function VideoPlayerSurface({
                 resetHudTimer();
                 onToggleSidePanel();
               }}
-              title={isSidePanelOpen ? 'Sağ Kanal & Radyo Menüsünü Kapat' : 'Sağ Kanal & Radyo Menüsünü Aç'}
+              title={isSidePanelOpen ? 'Kanal Menüsünü Gizle' : 'Kanal Menüsünü Aç'}
               aria-label={isSidePanelOpen ? 'Sağ Menüyü Kapat' : 'Sağ Menüyü Aç'}
-              className={`${btnPadCls} ${frameCls} flex items-center gap-1.5 text-[var(--accent)] transition-colors whitespace-nowrap`}
+              className={`${btnPadCls} ${frameCls} flex items-center text-[var(--accent)] transition-colors`}
             >
               {isSidePanelOpen ? (
                 <PanelRightClose className={iconSizeCls} />
               ) : (
                 <PanelRightOpen className={iconSizeCls} />
               )}
-              <span className="hidden lg:inline text-[11px] font-bold">
-                Kanallar &amp; Radyo
-              </span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Unmute Prompt if browser blocked autoplay audio */}
-      {needsUnmutePrompt && !playerError && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleMute();
-          }}
-          className="absolute bottom-20 right-3 z-25 flex items-center gap-2 px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-ink)] text-xs font-extrabold shadow-xl hover:bg-[var(--accent-hover)]"
-        >
-          <Volume2 className="w-5 h-5" />
-          <span>Sesi Aç</span>
-        </button>
-      )}
-
-      {/* Buffering Spinner with Buffer Label */}
+      {/* Minimal Buffering Spinner */}
       {isBuffering && !playerError && (
-        <div className="absolute inset-0 z-15 flex flex-col items-center justify-center gap-2 pointer-events-none">
-          <div className="w-12 h-12 rounded-full border-4 border-[var(--accent)]/25 border-t-[var(--accent)] animate-spin" />
-          <div className="px-3 py-1 rounded-lg bg-black/75 border border-white/15 text-[11px] font-bold text-[var(--accent)]">
-            {acceleratedPlaybackMode
-              ? `Hızlandırılmış Tampon (${hlsSummary.maxBufferLength}sn)...`
-              : 'Tampon Hazırlanıyor...'}
-          </div>
+        <div className="absolute inset-0 z-15 flex items-center justify-center pointer-events-none">
+          <div className="w-11 h-11 rounded-full border-4 border-[var(--accent)]/25 border-t-[var(--accent)] animate-spin" />
         </div>
       )}
 
@@ -1865,7 +1754,6 @@ export function VideoPlayerSurface({
                   channel={ch}
                   compact
                   epgNow={lookupEpgForChannel(epgMap, ch.name)?.now?.title ?? null}
-                  perfStats={perfMap[getChannelPerfKey(ch)] ?? null}
                   isPlaying={currentChannel?.id === ch.id}
                   isFavorite={favoriteIds.has(ch.name)}
                   onSelect={() => onSelectChannel(ch)}
